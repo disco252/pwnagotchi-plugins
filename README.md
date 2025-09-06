@@ -15,7 +15,7 @@ main.plugins.triplegeo.handshake_dir = "/home/pi/handshakes"
 main.plugins.triplegeo.wigle_upload = false  # disables auto-upload, set to true to enable
 
 
-==================================================================================================================================================================================
+======================================================================================================================================================================================
 
 pcapmerger.py
 
@@ -37,3 +37,23 @@ Edit your config.toml:
 main.plugins.pcapmerger.enabled = true 
 
 To verify, ensure your pwnagotchi has an internet connection, then check /merged/ output directory for newly merged .pcap files. You can also use journalctl | grep pcapmerger, or pwnagotchi --debug.
+
+
+======================================================================================================================================================================================
+
+Fastergotchi, because why not?
+
+edit config.toml and add:
+
+personality.recon_time = 5
+personality.max_inactive_scale = 1
+personality.recon_inactive_multiplier = 1
+personality.hop_recon_time = 2
+personality.min_recon_time = 1
+personality.bored_num_epochs = 5
+personality.sad_num_epochs =  10
+
+personality.ap_ttl = 60 
+personality.sta_ttl = 120
+
+======================================================================================================================================================================================

@@ -18,7 +18,7 @@ class TripleGeo(plugins.Plugin):
     __version__ = "1.4"
     __license__ = "GPL3"
     __description__ = (
-        "Geolocation plugin for Pwnagotchi: uses GPS dongle, Google API, or WiGLE API for locating WiFi handshakes. "
+        "Geolocation plugin for Pwnagotchi: uses GPS dongle, Google API, or WiGLE API to geolocate WiFi handshakes. "
         "Can upload data to WiGLE for wardriving. GPS, Google, WiGLE: triple fallback."
     )
     __name__ = "triplegeo"
@@ -32,17 +32,19 @@ class TripleGeo(plugins.Plugin):
         "pending_file": "/root/.triplegeo_pending",
         "wigle_delay": 2,
         "max_wigle_per_minute": 10,
-        "wigle_upload": True,  # New flag: enable/disable automatic WiGLE upload
+        "wigle_upload": True,
         "gpsd_host": "localhost",
         "gpsd_port": 2947
     }
-
     GOOGLE_API_URL = "https://www.googleapis.com/geolocation/v1/geolocate?key={api}"
     WIGLE_API_URL = "https://api.wigle.net/api/v2/network/search"
     WIGLE_UPLOAD_URL = "https://api.wigle.net/api/v2/network/upload"
 
     def __init__(self):
         super().__init__()
+        # Safe fallback: ensure options is always present
+        if not hasattr(self, 'options'):
+            self.options = dict(self.__defaults__)
         self.api_mutex = threading.Lock()
         self.processed = set()
         self.pending = []
@@ -227,7 +229,6 @@ class TripleGeo(plugins.Plugin):
         return None
 
     def maybe_upload_to_wigle(self, file_path):
-        """Uploads to WiGLE only if wigle_upload is True."""
         if not self.options.get("wigle_upload", True):
             logging.info("[TripleGeo] WiGLE upload is disabled by config; skipping upload.")
             return

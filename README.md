@@ -1,4 +1,4 @@
-triplegeo.py is a plugin that determines geolocation of captured WiFi handshakes. 
+triplegeo.py is a plugin that determines geolocation of captured WiFi handshakes. Requires net-pos.py
 It will first attempt to get coordinates via an attached GPS dongle, then it will fall back to Google's geolocation API, and finally queries the WiGLE API using BSSID data if the other options aren't available.
 
 This also uploads scan data to WiGLE for mapping.
@@ -11,4 +11,6 @@ main.plugins.triplegeo.wigle_user = "YOUR_WIGLE_USERNAME"
 main.plugins.triplegeo.wigle_token = "YOUR_WIGLE_API_TOKEN"
 main.plugins.triplegeo.handshake_dir = "/home/pi/handshakes"
 main.plugins.triplegeo.wigle_upload = false  # disables auto-upload, set to true to enable
+
+
 

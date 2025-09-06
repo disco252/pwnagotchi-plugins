@@ -1,7 +1,7 @@
 triplegeo.py 
 
 This a plugin that determines geolocation of captured WiFi handshakes. Requires net-pos.py
-It will first attempt to get coordinates via an attached GPS dongle, then it will fall back to Google's geolocation API, and finally queries the WiGLE API using BSSID data if the other options aren't available.
+It will first attempt to get coordinates via an attached GPS dongle, then it will fall back to Google's geolocation API, and finally queries the WiGLE API using BSSID data if the other options aren't available. Ensure there is internet over bluetooth tethering.
 
 This also uploads scan data to WiGLE for mapping.
 
@@ -24,7 +24,7 @@ main.plugins.triplegeo.wigle_upload = false  # disables auto-upload, set to true
 
 pcapmerger.py
 
-This is a plugin that will automatically merge captured WiFi handshakes, pcap files by both SSID and BSSID, ensuring only valid handshakes from the same network are combined. The output is /handshakes/merged, so ensure /merged/ is a created directory.
+This is a plugin that will automatically merge captured WiFi handshakes, pcap files by both SSID and BSSID, ensuring only valid handshakes from the same network are combined. The output is /handshakes/merged, so ensure /merged/ is a created directory. Ensure there is internet over bluetooth tethering.
 
 Instructions:
 

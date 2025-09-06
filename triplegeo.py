@@ -7,7 +7,6 @@ import time
 import threading
 import pwnagotchi.plugins as plugins
 
-# Try importing the gpsd client
 try:
     import gps
     HAS_GPSD = True
@@ -16,11 +15,11 @@ except ImportError:
 
 class TripleGeo(plugins.Plugin):
     __author__ = "disco252"
-    __version__ = "3.0"
+    __version__ = "1.4"
     __license__ = "GPL3"
     __description__ = (
-        "Geolocation for Pwnagotchi: uses GPS dongle when available, then Google/WiGLE APIs. "
-        "Uploads all scans to WiGLE. GPS, Google, WiGLE: triple fallback."
+        "Geolocation plugin for Pwnagotchi: uses GPS dongle, Google API, or WiGLE API for locating WiFi handshakes. "
+        "Can upload data to WiGLE for wardriving. GPS, Google, WiGLE: triple fallback."
     )
     __name__ = "triplegeo"
     __defaults__ = {
@@ -33,6 +32,7 @@ class TripleGeo(plugins.Plugin):
         "pending_file": "/root/.triplegeo_pending",
         "wigle_delay": 2,
         "max_wigle_per_minute": 10,
+        "wigle_upload": True,  # New flag: enable/disable automatic WiGLE upload
         "gpsd_host": "localhost",
         "gpsd_port": 2947
     }
@@ -42,7 +42,7 @@ class TripleGeo(plugins.Plugin):
     WIGLE_UPLOAD_URL = "https://api.wigle.net/api/v2/network/upload"
 
     def __init__(self):
-        super().__init__()  # options and everything else initialized
+        super().__init__()
         self.api_mutex = threading.Lock()
         self.processed = set()
         self.pending = []
@@ -51,7 +51,6 @@ class TripleGeo(plugins.Plugin):
         self.connect_gpsd()
 
     def _load_storage(self):
-        """Load processed and pending lists from files, ignore if missing."""
         try:
             if os.path.exists(self.options["processed_file"]):
                 with open(self.options["processed_file"], "r") as f:
@@ -66,7 +65,6 @@ class TripleGeo(plugins.Plugin):
             logging.warning(f"[TripleGeo] Unable to load pending uploads: {e}")
 
     def connect_gpsd(self):
-        """Attempt to connect to gpsd daemon if GPS is available."""
         if not HAS_GPSD:
             self.gps_session = None
             logging.warning("[TripleGeo] gpsd-py3 module not found; GPS disabled.")
@@ -79,7 +77,6 @@ class TripleGeo(plugins.Plugin):
             logging.warning(f"[TripleGeo] Could not connect to gpsd: {e}")
 
     def get_gps_coord(self, max_attempts=10):
-        """Blocks up to ~10 cycles and tries to get a valid GPS fix."""
         if not self.gps_session:
             return None
         try:
@@ -110,7 +107,6 @@ class TripleGeo(plugins.Plugin):
             logging.warning(f"[TripleGeo] Couldn't update pending queue: {e}")
 
     def on_handshake(self, agent, filename, access_point, client_station):
-        """Called when a handshake is captured."""
         gps_coord = self.get_gps_coord() if HAS_GPSD else None
         if gps_coord:
             gps_output = filename.replace(".pcap", ".triplegeo.coord.json")
@@ -123,9 +119,8 @@ class TripleGeo(plugins.Plugin):
         self._save_pending()
 
     def on_internet_available(self, agent):
-        """Triggered when an internet connection is detected."""
         with self.api_mutex:
-            self.connect_gpsd()  # In case gpsd is now hotplugged
+            self.connect_gpsd()
             hs_dir = self.options.get("handshake_dir", "/home/pi/handshakes")
             try:
                 files = [f for f in os.listdir(hs_dir)
@@ -148,20 +143,18 @@ class TripleGeo(plugins.Plugin):
                 coord_json = fpath.replace(".net-pos.json", ".coord.json")
                 with open(coord_json, "w") as out:
                     json.dump({"coord": coord_tag}, out)
-                self.upload_to_wigle(fpath)
+                self.maybe_upload_to_wigle(fpath)
                 self._mark_processed(fname)
                 if fname in self.pending:
                     self.pending.remove(fname)
                     self._save_pending()
-            # Attempt to upload any pending individually queued files
             for pending_path in list(self.pending):
                 if os.path.exists(pending_path):
-                    self.upload_to_wigle(pending_path)
+                    self.maybe_upload_to_wigle(pending_path)
                     self.pending.remove(pending_path)
                     self._save_pending()
 
     def get_coord_tag(self, ap_json, wigle_calls, start_time):
-        """Attempts GPS, then Google, then WiGLE for location."""
         gps_coord = self.get_gps_coord() if HAS_GPSD else None
         if gps_coord:
             logging.info(f"[TripleGeo] Used GPS: lat={gps_coord[0]}, lon={gps_coord[1]}")
@@ -195,7 +188,6 @@ class TripleGeo(plugins.Plugin):
         return {"lat": None, "lon": None, "source": "none"}
 
     def query_google(self, ap_json):
-        """Send scan results to Google's Geolocation API."""
         key = self.options.get("google_api_key", "")
         if not key:
             logging.warning("[TripleGeo] Google API key not set")
@@ -212,7 +204,6 @@ class TripleGeo(plugins.Plugin):
         return None
 
     def query_wigle(self, bssid):
-        """Query WiGLE for a BSSID location."""
         user = self.options.get("wigle_user")
         token = self.options.get("wigle_token")
         if not user or not token:
@@ -235,8 +226,14 @@ class TripleGeo(plugins.Plugin):
             logging.error(f"[TripleGeo] WiGLE API (bssid {bssid}) error: {e}")
         return None
 
+    def maybe_upload_to_wigle(self, file_path):
+        """Uploads to WiGLE only if wigle_upload is True."""
+        if not self.options.get("wigle_upload", True):
+            logging.info("[TripleGeo] WiGLE upload is disabled by config; skipping upload.")
+            return
+        self.upload_to_wigle(file_path)
+
     def upload_to_wigle(self, file_path):
-        """Uploads a file (usually a handshake) to WiGLE."""
         user = self.options.get("wigle_user")
         token = self.options.get("wigle_token")
         if not user or not token:

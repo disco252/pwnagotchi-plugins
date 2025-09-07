@@ -15,11 +15,11 @@ except ImportError:
 
 class TripleGeo(plugins.Plugin):
     __author__ = "disco252"
-    __version__ = "1.4"
+    __version__ = "1.5"
     __license__ = "GPL3"
     __description__ = (
-        "Geolocation plugin for Pwnagotchi: uses GPS dongle, Google API, or WiGLE API to geolocate WiFi handshakes. "
-        "Can upload data to WiGLE for wardriving. GPS, Google, WiGLE: triple fallback."
+        "Geolocation plugin for Pwnagotchi: uses GPS, Google API, or WiGLE API to geolocate WiFi handshakes, APs, and clients. "
+        "Maps all WiFi assets with geo-coords. Can upload handshake data to WiGLE. Triple fallback for location."
     )
     __name__ = "triplegeo"
     __defaults__ = {
@@ -34,7 +34,8 @@ class TripleGeo(plugins.Plugin):
         "max_wigle_per_minute": 10,
         "wigle_upload": True,
         "gpsd_host": "localhost",
-        "gpsd_port": 2947
+        "gpsd_port": 2947,
+        "global_log_file": "/root/triplegeo_globalaplog.jsonl"
     }
     GOOGLE_API_URL = "https://www.googleapis.com/geolocation/v1/geolocate?key={api}"
     WIGLE_API_URL = "https://api.wigle.net/api/v2/network/search"
@@ -42,13 +43,14 @@ class TripleGeo(plugins.Plugin):
 
     def __init__(self):
         super().__init__()
-        # Safe fallback: ensure options is always present
         if not hasattr(self, 'options'):
             self.options = dict(self.__defaults__)
         self.api_mutex = threading.Lock()
         self.processed = set()
         self.pending = []
         self.gps_session = None
+        self._gps_last = None
+        self._global_ap_log = set()
         self._load_storage()
         self.connect_gpsd()
 
@@ -80,18 +82,19 @@ class TripleGeo(plugins.Plugin):
 
     def get_gps_coord(self, max_attempts=10):
         if not self.gps_session:
-            return None
+            return self._gps_last
         try:
             count = 0
             while count < max_attempts:
                 report = self.gps_session.next()
                 if report.get('class') == 'TPV' and getattr(report, 'mode', 1) >= 2:
                     if hasattr(report, 'lat') and hasattr(report, 'lon'):
-                        return (float(report.lat), float(report.lon))
+                        self._gps_last = (float(report.lat), float(report.lon))
+                        return self._gps_last
                 count += 1
         except Exception as e:
             logging.warning(f"[TripleGeo] GPS exception: {e}")
-        return None
+        return self._gps_last
 
     def _mark_processed(self, fname):
         self.processed.add(fname)
@@ -107,6 +110,36 @@ class TripleGeo(plugins.Plugin):
                 json.dump(self.pending, f)
         except Exception as e:
             logging.warning(f"[TripleGeo] Couldn't update pending queue: {e}")
+
+    # NEW: General AP/Client/SSID Mapping from unfiltered scan list
+    def on_unfiltered_ap_list(self, agent, ap_list):
+        gps_coord = self.get_gps_coord() if HAS_GPSD else None
+        if not gps_coord:
+            logging.debug("[TripleGeo] No GPS for AP scan mapping")
+            return
+        log_items = []
+        now = time.time()
+        for ap in ap_list:
+            key = f"{ap.get('mac','')}|{ap.get('hostname','')}|{ap.get('client','')}"
+            if key and key not in self._global_ap_log:
+                entry = {
+                    "ts": now,
+                    "ssid": ap.get("hostname", "<unknown>"),
+                    "bssid": ap.get("mac", ""),
+                    "client": ap.get("client", ""),
+                    "lat": gps_coord[0],
+                    "lon": gps_coord[1]
+                }
+                log_items.append(entry)
+                self._global_ap_log.add(key)
+        if log_items:
+            try:
+                with open(self.options["global_log_file"], "a") as f:
+                    for item in log_items:
+                        f.write(json.dumps(item) + '\n')
+                logging.info(f"[TripleGeo] Mapped {len(log_items)} new APs/clients at coordinates.")
+            except Exception as e:
+                logging.error(f"[TripleGeo] Failed to log global AP map: {e}")
 
     def on_handshake(self, agent, filename, access_point, client_station):
         gps_coord = self.get_gps_coord() if HAS_GPSD else None

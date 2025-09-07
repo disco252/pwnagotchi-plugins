@@ -5,6 +5,8 @@ triplegeo.py
 This a plugin that determines geolocation of captured WiFi handshakes. Requires net-pos.py
 It will first attempt to get coordinates via an attached GPS dongle, then it will fall back to Google's geolocation API, and finally queries the WiGLE API using BSSID data if the other options aren't available. Ensure there is internet over bluetooth tethering.
 
+This logs all seen APs, clients on every scan with current GPS location.
+
 This also uploads scan data to WiGLE for mapping.
 
 Here is an example of what needs to be in config.toml:

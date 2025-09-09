@@ -62,20 +62,20 @@ class TripleGeo(plugins.Plugin):
                 with open(self.options["processed_file"]) as f:
                     self.processed = set(json.load(f))
         except Exception as e:
-            logging.warning(f"[TripleGeo] {_e}")
+            logging.warning(f"[TripleGeo] {e}")
         try:
             if os.path.exists(self.options["pending_file"]):
                 with open(self.options["pending_file"]) as f:
                     self.pending = json.load(f)
         except Exception as e:
-            logging.warning(f"[TripleGeo] {_e}")
+            logging.warning(f"[TripleGeo] {e}")
 
     def _save_pending(self):
         try:
             with open(self.options["pending_file"], "w") as f:
                 json.dump(self.pending, f)
         except Exception as e:
-            logging.warning(f"[TripleGeo] {_e}")
+            logging.warning(f"[TripleGeo] {e}")
 
     def connect_gpsd(self):
         if not HAS_GPSD:
@@ -168,17 +168,17 @@ class TripleGeo(plugins.Plugin):
         import datetime
         ts = datetime.datetime.utcfromtimestamp(event["timestamp"]).strftime('%Y-%m-%d %H:%M:%S UTC')
         fields = [
-            {"name":"SSID","value":event["ssid"],"inline":True},
-            {"name":"BSSID","value":event["bssid"],"inline":True},
-            {"name":"Client","value":event["client"],"inline":True},
+            {"name":"SSID","value":str(event["ssid"]),"inline":True},
+            {"name":"BSSID","value":str(event["bssid"]),"inline":True},
+            {"name":"Client","value":str(event["client"]),"inline":True},
             {"name":"Signal","value":f"{event['rssi']} dBm","inline":True},
-            {"name":"Channel","value":event["channel"],"inline":True},
-            {"name":"Encryption","value":event["encryption"],"inline":True},
-            {"name":"Vendor","value":event["vendor"],"inline":True},
+            {"name":"Channel","value":str(event["channel"]),"inline":True},
+            {"name":"Encryption","value":str(event["encryption"]),"inline":True},
+            {"name":"Vendor","value":str(event["vendor"]),"inline":True},
             {"name":"Timestamp","value":ts,"inline":True},
-            {"name":"Coordinates","value":f\"{event['lat']},{event['lon']}\","inline":True},
-            {"name":"Source","value":event["source"],"inline":True},
-            {"name":"File","value":event.get("handshake_file",""),"inline":False},
+            {"name":"Coordinates","value":f"{event['lat']},{event['lon']}","inline":True},
+            {"name":"Source","value":str(event["source"]),"inline":True},
+            {"name":"File","value":str(event.get("handshake_file","")),"inline":False},
         ]
         payload={"embeds":[{"title":":satellite: New Event","fields":fields,"footer":{"text":f"triplegeo v{self.__version__}"}}]}
         try:

@@ -64,12 +64,7 @@ class TripleGeo(plugins.Plugin):
 
     def _report_existing_coords(self):
         logging.info(f"[TripleGeo] discord_webhook_url={self.options.get('discord_webhook_url')}")
-        """
-        Send Discord messages for all existing .coord.json files
-        in handshake_dir at plugin startup.
-        """
         hd = self.options.get("handshake_dir", "/home/pi/handshakes")
-        # match both *.coord.json and *.triplegeo.coord.json
         patterns = [
             os.path.join(hd, "*.triplegeo.coord.json"),
             os.path.join(hd, "*.coord.json")
@@ -77,38 +72,46 @@ class TripleGeo(plugins.Plugin):
         files = []
         for pattern in patterns:
             files.extend(glob.glob(pattern))
+
         if not files:
             logging.info("[TripleGeo] No existing coord.json files to report.")
             return
+
         logging.info(f"[TripleGeo] Reporting {len(files)} existing coord.json files.")
         for coord_file in files:
             try:
                 with open(coord_file) as f:
                     data = json.load(f)
-                # determine handshake filename and extract SSID
+
                 if coord_file.endswith(".triplegeo.coord.json"):
                     handshake_file = os.path.basename(coord_file).replace(".triplegeo.coord.json", ".pcap")
                     name = os.path.basename(coord_file).rsplit(".triplegeo.coord.json", 1)[0]
                 else:
                     handshake_file = os.path.basename(coord_file).replace(".coord.json", ".pcap")
                     name = os.path.basename(coord_file).rsplit(".coord.json", 1)[0]
-                
-                # Extract SSID from filename (part before first underscore)
+
                 ssid = name.split("_", 1)[0]
-                
+
                 event = {
                     "timestamp":         time.time(),
-                    "ssid":              ssid,  # Now extracts from filename
+                    "ssid":              ssid,
                     "bssid":             "N/A",
                     "client":            "N/A",
                     "rssi":              "N/A",
+                    "snr":               "N/A",
                     "channel":           "N/A",
+                    "frequency":         "N/A",
+                    "band":              "N/A",
                     "encryption":        "N/A",
                     "lat":               data.get("coord", {}).get("lat", "N/A"),
                     "lon":               data.get("coord", {}).get("lon", "N/A"),
+                    "altitude":          data.get("coord", {}).get("altitude", "N/A"),
                     "source":            data.get("source", "unknown"),
                     "vendor":            "N/A",
                     "handshake_file":    handshake_file,
+                    "supported_rates":            data.get("supported_rates", []),
+                    "extended_supported_rates":   data.get("extended_supported_rates", []),
+                    "vendor_specific_tags":       data.get("vendor_specific", {}),
                     "pwnagotchi_name":   getattr(self, "name", lambda:"Unknown")(),
                     "device_fingerprint":getattr(self, "fingerprint", lambda:"Unknown")(),
                 }
@@ -157,10 +160,15 @@ class TripleGeo(plugins.Plugin):
         try:
             for _ in range(max_attempts):
                 report = self.gps_session.next()
-                if report.get('class') == 'TPV' and getattr(report, 'mode', 1) >= 2:
-                    if hasattr(report, 'lat') and hasattr(report, 'lon'):
-                        self._gps_last = (float(report.lat), float(report.lon))
-                        return self._gps_last
+                if report.get('class') == 'TPV' and getattr(report, 'mode', 1) >= 2 and hasattr(report, 'lat') and hasattr(report, 'lon'):
+                    lat = float(report.lat)
+                    lon = float(report.lon)
+                    alt = getattr(report, 'alt', None)
+                    if alt is not None:
+                        self._gps_last = (lat, lon, float(alt))
+                    else:
+                        self._gps_last = (lat, lon)
+                    return self._gps_last
         except Exception as e:
             logging.warning(f"[TripleGeo] GPS exception: {e}")
         return self._gps_last
@@ -174,33 +182,50 @@ class TripleGeo(plugins.Plugin):
             elif method == "google":
                 key = self.options["google_api_key"]
                 if key and data:
-                    # implement Google API call
-                    pass
+                    pass  # implement Google API call
             elif method == "wigle":
                 user, token = self.options["wigle_user"], self.options["wigle_token"]
                 if user and token and data:
-                    # implement WiGLE API call
-                    pass
+                    pass  # implement WiGLE API call
         return None, None
 
     def on_unfiltered_ap_list(self, agent, ap_list):
+        logging.info(f"AP entry keys: {ap_list.keys()}")
         gps_coord = self.get_gps_coord() if HAS_GPSD else None
         now = time.time()
         for ap in ap_list:
             key = f"{ap.get('mac')}|{ap.get('hostname')}|{ap.get('client')}"
             if key not in self.processed:
+                # SNR
+                noise = ap.get("noise")
+                rssi  = ap.get("rssi")
+                snr   = "N/A"
+                if isinstance(rssi, (int,float)) and isinstance(noise, (int,float)):
+                    snr = rssi - noise
+                # frequency & band
+                freq = ap.get("frequency")
+                band = "unknown"
+                if isinstance(freq, (int,float)):
+                    band = "2.4 GHz" if freq < 3000 else "5 GHz" if freq < 6000 else "6 GHz"
                 entry = {
                     "timestamp":        now,
                     "ssid":             ap.get("hostname", "<unknown>"),
                     "bssid":            ap.get("mac", ""),
                     "client":           ap.get("client", ""),
-                    "rssi":             ap.get("rssi", "N/A"),
+                    "rssi":             rssi or "N/A",
+                    "snr":              snr,
                     "channel":          ap.get("channel", "N/A"),
+                    "frequency":        freq or "N/A",
+                    "band":             band,
                     "encryption":       ap.get("encryption", "N/A"),
                     "lat":              gps_coord[0] if gps_coord else "N/A",
                     "lon":              gps_coord[1] if gps_coord else "N/A",
+                    "altitude":         gps_coord[2] if gps_coord and len(gps_coord) > 2 else "N/A",
                     "source":           "gpsd" if gps_coord else "none",
                     "vendor":           oui_lookup(ap.get("mac", "")),
+                    "supported_rates":            ap.get("supported_rates", []),
+                    "extended_supported_rates":   ap.get("extended_supported_rates", []),
+                    "vendor_specific_tags":       ap.get("vendor_specific", {}),
                     "pwnagotchi_name":  getattr(agent, "name", lambda:"Unknown")(),
                     "device_fingerprint": getattr(agent, "fingerprint", lambda:"Unknown")(),
                 }
@@ -214,31 +239,48 @@ class TripleGeo(plugins.Plugin):
 
     def on_handshake(self, agent, filename, ap, client):
         gps_coord = self.get_gps_coord() if HAS_GPSD else None
-        
-        # Extract SSID from handshake filename
         shortname = os.path.basename(filename).replace(".pcap", "")
         ssid = shortname.split("_", 1)[0]
-        
+        noise = getattr(ap, "noise", None)
+        rssi  = getattr(ap, "rssi", None)
+        snr   = "N/A"
+        if isinstance(rssi, (int,float)) and isinstance(noise, (int,float)):
+            snr = rssi - noise
+        freq = getattr(ap, "frequency", None)
+        band = "unknown"
+        if isinstance(freq, (int,float)):
+            band = "2.4 GHz" if freq < 3000 else "5 GHz" if freq < 6000 else "6 GHz"
+
         entry = {
             "timestamp":        time.time(),
-            "ssid":             ssid,  # Now extracts from filename
+            "ssid":             ssid,
             "bssid":            getattr(ap, "mac", None),
             "client":           getattr(client, "mac", ""),
-            "rssi":             getattr(ap, "rssi", "N/A"),
+            "rssi":             rssi or "N/A",
+            "snr":              snr,
             "channel":          getattr(ap, "channel", "N/A"),
+            "frequency":        freq or "N/A",
+            "band":             band,
             "encryption":       getattr(ap, "encryption", "N/A"),
             "lat":              gps_coord[0] if gps_coord else "N/A",
             "lon":              gps_coord[1] if gps_coord else "N/A",
+            "altitude":         gps_coord[2] if gps_coord and len(gps_coord) > 2 else "N/A",
             "source":           "gpsd" if gps_coord else "none",
             "vendor":           oui_lookup(getattr(ap, "mac", "")),
             "handshake_file":   filename,
+            "supported_rates":            getattr(ap, "supported_rates", []),
+            "extended_supported_rates":   getattr(ap, "extended_supported_rates", []),
+            "vendor_specific_tags":       getattr(ap, "vendor_specific", {}),
             "pwnagotchi_name":  getattr(agent, "name", lambda:"Unknown")(),
             "device_fingerprint": getattr(agent, "fingerprint", lambda:"Unknown")(),
         }
         if gps_coord:
             coord_file = filename.replace(".pcap", ".triplegeo.coord.json")
+            coord_data = {"coord": {"lat": gps_coord[0], "lon": gps_coord[1]}, "source": "gpsd"}
+            if len(gps_coord) > 2:
+                coord_data["coord"]["altitude"] = gps_coord[2]
             with open(coord_file, "w") as f:
-                json.dump({"coord": {"lat": gps_coord[0], "lon": gps_coord[1]}, "source": "gpsd"}, f)
+                json.dump(coord_data, f)
         self.pending.append(filename)
         self._save_pending()
         self.send_discord_webhook(entry)
@@ -250,17 +292,32 @@ class TripleGeo(plugins.Plugin):
             return
         logging.info(f"[TripleGeo] Sending webhook to {url}")
         ts = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(event["timestamp"]))
+
+        rates = event.get("supported_rates", [])
+        ext_rates = event.get("extended_supported_rates", [])
+        all_rates = rates + ext_rates if isinstance(rates, list) and isinstance(ext_rates, list) else []
+        rates_str = ", ".join([f"{r} Mbps" for r in all_rates[:5]]) if all_rates else "N/A"
+
+        vendor_tags = event.get("vendor_specific_tags", {})
+        vendor_str = ", ".join([f"{k}: {v}" for k, v in vendor_tags.items()][:3]) if vendor_tags else "N/A"
+
         fields = [
             {"name":"SSID","value":str(event["ssid"]),"inline":True},
             {"name":"BSSID","value":str(event["bssid"]),"inline":True},
             {"name":"Client","value":str(event.get("client","")),"inline":True},
             {"name":"Signal","value":f"{event.get('rssi','N/A')} dBm","inline":True},
+            {"name":"SNR","value":f"{event.get('snr','N/A')} dB","inline":True},
             {"name":"Channel","value":str(event.get("channel","N/A")),"inline":True},
+            {"name":"Frequency","value":f"{event.get('frequency','N/A')} MHz","inline":True},
+            {"name":"Band","value":str(event.get("band","N/A")),"inline":True},
             {"name":"Encryption","value":str(event.get("encryption","N/A")),"inline":True},
             {"name":"Vendor","value":str(event.get("vendor","")),"inline":True},
             {"name":"Timestamp","value":ts,"inline":True},
             {"name":"Coordinates","value":f"{event.get('lat','N/A')},{event.get('lon','N/A')}","inline":True},
+            {"name":"Altitude","value":f"{event.get('altitude','N/A')} m","inline":True},
             {"name":"Source","value":str(event.get("source","")),"inline":True},
+            {"name":"Supported Rates","value":rates_str,"inline":False},
+            {"name":"Vendor Tags","value":vendor_str,"inline":False},
             {"name":"File","value":str(event.get("handshake_file","")),"inline":False},
         ]
         payload = {

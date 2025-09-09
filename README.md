@@ -49,6 +49,9 @@ main.plugins.triplegeo.global_log_file = "/root/triplegeo_globalaplog.jsonl"<br>
 main.plugins.triplegeo.wigle_delay = 2<br>
 main.plugins.triplegeo.max_wigle_per_minute = 10<br>
 
+You may be required to edit "etc/hosts" to include UR.IP.XX.XX discord.com for the webhook to function.
+
+
 ======================================================================================================================================================================================
 
 pcapmerger.py

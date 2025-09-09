@@ -84,7 +84,7 @@ net_pos.py is based upon the original plugin, but it works. Use Google Geolocati
 
 
 main.plugins.net-pos.enabled = true<br>
-main.plugins.net-pos.api_key = "AIzaSyBcLTRpiYAzijWQ64PnhplOoNXMU9rDhuM"<br>
+main.plugins.net-pos.api_key = "GOOGLE API KEY HERE"<br>
 main.plugins.net-pos.loc_file = "/home/pi/.pwn/locations.json"<br>
 main.plugins.net-pos.update_interval = 300<br>
 

@@ -31,14 +31,18 @@ main.plugins.triplegeo.discord_webhook_url = "https://discord.com/api/webhookURL
 main.plugins.triplegeo.google_api_key = "YOUR_GOOGLE_API_KEY"<br>
 main.plugins.triplegeo.wigle_user = "YOUR_WIGLE_USERNAME"<br>
 main.plugins.triplegeo.wigle_token = "YOUR_WIGLE_API_TOKEN"<br>
-main.plugins.triplegeo.handshake_dir = "/home/pi/handshakes"<br>
 main.plugins.triplegeo.wigle_upload = false  # disables auto-upload, set to true to enable<br>
-main.plugins.triplegeo.wigle_delay = 2<br>
-main.plugins.triplegeo.max_wigle_per_minute = 10<br>
-main.plugins.triplegeo.wigle_upload = true<br>
+main.plugins.triplegeo.handshake_dir = "/home/pi/handshakes"<br>
 main.plugins.triplegeo.gpsd_host = "localhost"<br>
 main.plugins.triplegeo.gpsd_port = 2947<br>
+
+Optional:
+
+main.plugins.triplegeo.processed_file = "/root/.triplegeo_processed"<br>
+main.plugins.triplegeo.pending_file = "/root/.triplegeo_pending" <br>
 main.plugins.triplegeo.global_log_file = "/root/triplegeo_globalaplog.jsonl"<br>
+main.plugins.triplegeo.wigle_delay = 2<br>
+main.plugins.triplegeo.max_wigle_per_minute = 10<br>
 
 ======================================================================================================================================================================================
 

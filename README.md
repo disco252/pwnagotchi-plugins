@@ -9,6 +9,21 @@ This logs all seen APs, clients on every scan with current GPS location. Reports
 
 This also uploads scan data to WiGLE for mapping.
 
+sudo apt update(never upgrade)
+
+sudo apt install gpsd gpsd-clients
+
+sudo apt install python3-gps(just incase, probably already there)
+
+sudo nano /etc/default/gpsd<br>START_DAEMON="true"<br>USBAUTO="false"<br>DEVICES="/dev/ttyAMA0"<br>GPSD_OPTIONS="-n"<br>
+
+sudo systemctl enable gpsd.service<br>
+sudo systemctl start gpsd.service
+
+
+
+
+
 Here is an example of what needs to be in config.toml:
 
 main.plugins.triplegeo.enabled = true
@@ -25,6 +40,17 @@ main.plugins.triplegeo.handshake_dir = "/home/pi/handshakes"
 
 main.plugins.triplegeo.wigle_upload = false  # disables auto-upload, set to true to enable
 
+main.plugins.triplegeo.wigle_delay = 2
+
+main.plugins.triplegeo.max_wigle_per_minute = 10
+
+main.plugins.triplegeo.wigle_upload = true
+
+main.plugins.triplegeo.gpsd_host = "localhost"
+
+main.plugins.triplegeo.gpsd_port = 2947
+
+main.plugins.triplegeo.global_log_file = "/root/triplegeo_globalaplog.jsonl"
 
 ======================================================================================================================================================================================
 

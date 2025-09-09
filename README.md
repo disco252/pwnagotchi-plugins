@@ -35,8 +35,7 @@ main.plugins.triplegeo.wigle_user = "YOUR_WIGLE_USERNAME"<br>
 main.plugins.triplegeo.wigle_token = "YOUR_WIGLE_API_TOKEN"<br>
 main.plugins.triplegeo.wigle_upload = false  # disables auto-upload, set to true to enable<br>
 main.plugins.triplegeo.handshake_dir = "/home/pi/handshakes"<br>
-main.plugins.triplegeo.gpsd_host = "localhost"<br>
-main.plugins.triplegeo.gpsd_port = 2947<br>
+
 
 Optional:
 

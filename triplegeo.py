@@ -140,7 +140,7 @@ class TripleGeo(plugins.Plugin):
             "timestamp": time.time(),
             "ssid": getattr(ap,"ssid",None),
             "bssid": getattr(ap,"mac",None),
-            "client": getattr(client,"mac",""),
+            "client": getattr(client,"mac","") if client else "",
             "rssi": getattr(ap,"rssi","N/A"),
             "channel": getattr(ap,"channel","N/A"),
             "encryption": getattr(ap,"encryption","N/A"),

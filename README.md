@@ -22,8 +22,12 @@ sudo nano /etc/default/gpsd<br>START_DAEMON="true"<br>USBAUTO="false"<br>DEVICES
 sudo systemctl enable gpsd.service<br>
 sudo systemctl start gpsd.service
 
+Every event is written to /root/triplegeo_globalaplog.jsonl<br>Will always have a complete record even if discord webhook fails.<br>
+Handshake filenames are appended to your pending uploads file at<br>
+/root/.triplegeo_pending<br>
 
-
+Processed handshakes are tracked in<br>
+/root/.triplegeo_processed
 
 
 Here is an example of what needs to be in config.toml:

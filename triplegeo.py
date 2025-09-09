@@ -2,15 +2,10 @@ import logging
 import requests
 import os
 import json
-import base64
 import time
 import threading
+
 import pwnagotchi.plugins as plugins
-try:
-    import gps
-    HAS_GPSD = True
-except ImportError:
-    HAS_GPSD = False
 
 def oui_lookup(mac):
     vendors = {
@@ -21,169 +16,152 @@ def oui_lookup(mac):
 
 class TripleGeo(plugins.Plugin):
     __author__ = "disco252"
-    __version__ = "1.6"
+    __version__ = "1.7"
     __license__ = "GPL3"
     __description__ = (
-        "Advanced geolocation, AP/client mapping, and Discord notifications for Pwnagotchi. "
-        "Uses GPS, Google, or WiGLE; posts detailed events to Discord."
+        "Advanced geolocation via GPS, Google, or Wigle; posts events to Discord."
     )
-    __name__ = "triplegeo"
     __defaults__ = {
-        "enabled": False,
-        "google_api_key": "",
-        "wigle_user": "",
-        "wigle_token": "",
-        "handshake_dir": "/home/pi/handshakes",
-        "processed_file": "/root/.triplegeo_processed",
-        "pending_file": "/root/.triplegeo_pending",
-        "wigle_delay": 2,
-        "max_wigle_per_minute": 10,
-        "wigle_upload": True,
+        "enabled":         False,
+        "mode":            ["gps","google","wigle"],  # order of fallback
+        "google_api_key":  "",
+        "wigle_user":      "",
+        "wigle_token":     "",
+        "handshake_dir":   "/home/pi/handshakes",
+        "processed_file":  "/root/.triplegeo_processed",
+        "discord_webhook_url":"",
         "global_log_file": "/root/triplegeo_globalaplog.jsonl",
-        "discord_webhook_url": "",
+        "wigle_delay":      2,
+        "max_wigle_per_minute":10,
     }
 
     def __init__(self):
         super().__init__()
-        if not hasattr(self, 'options'):
-            self.options = dict(self.__defaults__)
-        self.api_mutex = threading.Lock()
         self.processed = set()
-        self.pending = []
-        self.gps_session = None
-        self._gps_last = None
-        self._global_ap_log = set()
-        self._load_storage()
-        self.connect_gpsd()
+        self.lock = threading.Lock()
+        self._load_processed()
+        self.session = requests.Session()
 
-    def _load_storage(self):
+    def _load_processed(self):
         try:
             if os.path.exists(self.options["processed_file"]):
                 with open(self.options["processed_file"]) as f:
                     self.processed = set(json.load(f))
         except Exception as e:
-            logging.warning(f"[TripleGeo] {e}")
-        try:
-            if os.path.exists(self.options["pending_file"]):
-                with open(self.options["pending_file"]) as f:
-                    self.pending = json.load(f)
-        except Exception as e:
-            logging.warning(f"[TripleGeo] {e}")
+            logging.warning(f"[TripleGeo] load processed: {e}")
 
-    def _save_pending(self):
+    def _save_processed(self):
         try:
-            with open(self.options["pending_file"], "w") as f:
-                json.dump(self.pending, f)
+            with open(self.options["processed_file"], "w") as f:
+                json.dump(list(self.processed), f)
         except Exception as e:
-            logging.warning(f"[TripleGeo] {e}")
+            logging.warning(f"[TripleGeo] save processed: {e}")
 
-    def connect_gpsd(self):
-        if not HAS_GPSD:
-            logging.warning("[TripleGeo] gpsd-py3 module not found; GPS disabled.")
+    def on_internet_available(self, agent):
+        """Process any new .net-pos.json handshake files."""
+        hd = self.options["handshake_dir"]
+        files = sorted(f for f in os.listdir(hd) if f.endswith(".net-pos.json"))
+        new = [f for f in files if f not in self.processed]
+        if not new:
             return
+
+        for fname in new:
+            path = os.path.join(hd, fname)
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+            except Exception as e:
+                logging.warning(f"[TripleGeo] open {fname}: {e}")
+                self.processed.add(fname)
+                continue
+
+            # Determine geolocation via configured mode
+            coord, source = self._geolocate(data)
+            event = {
+                "timestamp": time.time(),
+                "ssid":      data.get("wifiAccessPoints",[])[0].get("ssid","N/A") if data.get("wifiAccessPoints") else "N/A",
+                "bssid":     data.get("wifiAccessPoints",[])[0].get("macAddress",""),
+                "lat":       coord[0],
+                "lon":       coord[1],
+                "source":    source,
+                "vendor":    oui_lookup(data.get("wifiAccessPoints",[])[0].get("macAddress","")),
+                "file":      fname,
+            }
+
+            self._log_global(event)
+            self._post_discord(event)
+            self.processed.add(fname)
+
+        self._save_processed()
+
+    def _geolocate(self, netpos_json):
+        """Try gpsd? (skipped), then Google, then Wigle."""
+        for m in self.options["mode"]:
+            if m == "google" and self.options["google_api_key"]:
+                coord = self._google_loc(netpos_json)
+                if coord:
+                    return coord, "google"
+            if m == "wigle" and self.options["wigle_user"]:
+                coord = self._wigle_loc(netpos_json)
+                if coord:
+                    return coord, "wigle"
+            # gps mode is no-op here; we skip it if no gpsd module
+        return ("N/A","N/A"), "none"
+
+    def _google_loc(self, data):
+        url = f"https://www.googleapis.com/geolocation/v1/geolocate?key={self.options['google_api_key']}"
         try:
-            # Connect via the default GPSD socket rather than host/port
-            logging.info("[TripleGeo] Connecting to local gpsd socket")
-            self.gps_session = gps.gps()  # no args → uses /var/run/gpsd.sock
-            logging.info("[TripleGeo] Connected to gpsd for GPS.")
+            r = self.session.post(url, json={"wifiAccessPoints": data["wifiAccessPoints"]}, timeout=10)
+            r.raise_for_status()
+            j = r.json().get("location")
+            return (j["lat"], j["lng"])
         except Exception as e:
-            self.gps_session = None
-            logging.warning(f"[TripleGeo] Could not connect to gpsd: {e}")
+            logging.warning(f"[TripleGeo] Google geolocate failed: {e}")
+            return None
 
-    def get_gps_coord(self, max_attempts=10):
-        if not self.gps_session:
-            return self._gps_last
+    def _wigle_loc(self, data):
+        # Simple Wigle API wrapper
+        url = "https://api.wigle.net/api/v2/geo"
+        auth = (self.options["wigle_user"], self.options["wigle_token"])
         try:
-            for _ in range(max_attempts):
-                report = self.gps_session.next()
-                if report.get('class') == 'TPV' and getattr(report, 'mode', 1) >= 2:
-                    if hasattr(report, 'lat') and hasattr(report, 'lon'):
-                        self._gps_last = (float(report.lat), float(report.lon))
-                        return self._gps_last
+            # only send BSSID list
+            bssids = [ap["macAddress"] for ap in data["wifiAccessPoints"]]
+            r = self.session.post(url, auth=auth, json={"netids": bssids}, timeout=10)
+            r.raise_for_status()
+            res = r.json()
+            if res.get("results"):
+                lat = res["results"][0]["trilat"]
+                lon = res["results"][0]["trilong"]
+                return (lat, lon)
         except Exception as e:
-            logging.warning(f"[TripleGeo] GPS exception: {e}")
-        return self._gps_last
+            logging.warning(f"[TripleGeo] Wigle geolocate failed: {e}")
+        return None
 
-    def on_unfiltered_ap_list(self, agent, ap_list):
-        gps_coord = self.get_gps_coord() if HAS_GPSD else None
-        now = time.time()
-        for ap in ap_list:
-            key = f"{ap.get('mac')}|{ap.get('hostname')}|{ap.get('client')}"
-            if key not in self._global_ap_log:
-                entry = {
-                    "timestamp": now,
-                    "ssid": ap.get("hostname", "<unknown>"),
-                    "bssid": ap.get("mac", ""),
-                    "client": ap.get("client", ""),
-                    "rssi": ap.get("rssi", "N/A"),
-                    "channel": ap.get("channel", "N/A"),
-                    "encryption": ap.get("encryption", "N/A"),
-                    "lat": gps_coord[0] if gps_coord else "N/A",
-                    "lon": gps_coord[1] if gps_coord else "N/A",
-                    "source": "gpsd" if gps_coord else "none",
-                    "vendor": oui_lookup(ap.get("mac", "")),
-                    "google_maps": f"<https://www.google.com/maps/search/?api=1&query={gps_coord>[0]},{gps_coord[1]}" if gps_coord else "N/A",
-                    "pwnagotchi_name": getattr(agent, "name", lambda:"Unknown")(),
-                    "device_fingerprint": getattr(agent, "fingerprint", lambda:"Unknown")(),
-                }
-                self._global_ap_log.add(key)
-                try:
-                    with open(self.options["global_log_file"], "a") as f:
-                        f.write(json.dumps(entry)+"\n")
-                except Exception as e:
-                    logging.error(f"[TripleGeo] Failed to log: {e}")
-                self.send_discord_webhook(entry)
+    def _log_global(self, event):
+        try:
+            with open(self.options["global_log_file"], "a") as f:
+                f.write(json.dumps(event)+"\n")
+        except Exception as e:
+            logging.error(f"[TripleGeo] failed global log: {e}")
 
-    def on_handshake(self, agent, filename, ap, client):
-        gps_coord = self.get_gps_coord() if HAS_GPSD else None
-        entry = {
-            "timestamp": time.time(),
-            "ssid": getattr(ap,"ssid",None),
-            "bssid": getattr(ap,"mac",None),
-            "client": getattr(client,"mac","") if client else "",
-            "rssi": getattr(ap,"rssi","N/A"),
-            "channel": getattr(ap,"channel","N/A"),
-            "encryption": getattr(ap,"encryption","N/A"),
-            "lat": gps_coord[0] if gps_coord else "N/A",
-            "lon": gps_coord[1] if gps_coord else "N/A",
-            "source": "gpsd" if gps_coord else "none",
-            "vendor": oui_lookup(getattr(ap,"mac","")),
-            "google_maps": f"<https://www.google.com/maps/search/?api=1&query={gps_coord>[0]},{gps_coord[1]}" if gps_coord else "N/A",
-            "handshake_file": filename,
-            "pwnagotchi_name": getattr(agent,"name",lambda:"Unknown")(),
-            "device_fingerprint": getattr(agent,"fingerprint",lambda:"Unknown")(),
-        }
-        if gps_coord:
-            out = filename.replace(".pcap",".triplegeo.coord.json")
-            with open(out,"w") as f:
-                json.dump({"coord":{"lat":gps_coord[0],"lon":gps_coord[1]},"source":"gpsd"},f)
-        self.pending.append(filename)
-        self._save_pending()
-        self.send_discord_webhook(entry)
-
-    def send_discord_webhook(self, event):
+    def _post_discord(self, ev):
         url = self.options.get("discord_webhook_url")
         if not url:
             return
-        import datetime
-        ts = datetime.datetime.utcfromtimestamp(event["timestamp"]).strftime('%Y-%m-%d %H:%M:%S UTC')
+        ts = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(ev["timestamp"]))
         fields = [
-            {"name":"SSID","value":str(event["ssid"]),"inline":True},
-            {"name":"BSSID","value":str(event["bssid"]),"inline":True},
-            {"name":"Client","value":str(event["client"]),"inline":True},
-            {"name":"Signal","value":f"{event['rssi']} dBm","inline":True},
-            {"name":"Channel","value":str(event["channel"]),"inline":True},
-            {"name":"Encryption","value":str(event["encryption"]),"inline":True},
-            {"name":"Vendor","value":str(event["vendor"]),"inline":True},
-            {"name":"Timestamp","value":ts,"inline":True},
-            {"name":"Coordinates","value":f"{event['lat']},{event['lon']}","inline":True},
-            {"name":"Source","value":str(event["source"]),"inline":True},
-            {"name":"File","value":str(event.get("handshake_file","")),"inline":False},
+            {"name":"SSID","value":ev["ssid"],"inline":True},
+            {"name":"BSSID","value":ev["bssid"],"inline":True},
+            {"name":"Coordinates","value":f"{ev['lat']},{ev['lon']}","inline":True},
+            {"name":"Source","value":ev["source"],"inline":True},
+            {"name":"Vendor","value":ev["vendor"],"inline":True},
+            {"name":"Timestamp","value":ts,"inline":False},
+            {"name":"File","value":ev["file"],"inline":False},
         ]
-        payload={"embeds":[{"title":":satellite: New Event","fields":fields,"footer":{"text":f"triplegeo v{self.__version__}"}}]}
+        payload = {"embeds":[{"title":":satellite: New Handshake","fields":fields}]}
         try:
-            r = requests.post(url,json=payload,timeout=10)
+            r = self.session.post(url,json=payload,timeout=10)
             if not r.ok:
-                logging.warning(f"[TripleGeo] Webhook failed: {r.status_code} {r.text}")
+                logging.warning(f"[TripleGeo] Webhook error: {r.status_code} {r.text}")
         except Exception as e:
-            logging.error(f"[TripleGeo] Webhook error: {e}")
+            logging.error(f"[TripleGeo] Webhook exception: {e}")

@@ -49,12 +49,16 @@ class BLEWardrive(plugins.Plugin):
         duration = self.options["scan_duration"]
         while not self.stop_event.is_set():
             logging.info("[BLEWardrive] Starting BLE scan")
-            devices = await BleakScanner.discover(timeout=duration)
-            for d in devices:
-                self._report_device(d)
+            devices = await BleakScanner.discover(timeout=duration, return_adv=True)
+            for device_addr, (device, adv_data) in devices.items():
+                # RSSI may be on adv_data or device, try both
+                rssi = getattr(adv_data, "rssi", None) or getattr(device, "rssi", None)
+                if rssi is None:
+                    continue
+                self._report_device(device, adv_data, rssi)
             await asyncio.sleep(interval)
 
-    def _report_device(self, device):
+    def _report_device(self, device, adv_data, rssi):
         url = self.options.get("discord_webhook_url")
         if not url:
             return
@@ -62,9 +66,9 @@ class BLEWardrive(plugins.Plugin):
         # gather advertisement data
         name = device.name or "<Unknown>"
         addr = device.address
-        rssi = device.rssi
-        adv_data = device.metadata.get("manufacturer_data", {})
-        adv_str = "; ".join(f"{mfg}: {bytes(val).hex()}" for mfg, val in adv_data.items()) or "None"
+        adv_data_dict = adv_data.manufacturer_data or {}
+        adv_str = "; ".join(f"{mfg}: {bytes(val).hex()}" for mfg, val in adv_data_dict.items()) or "None"
+
         fields = [
             {"name": "Address", "value": addr, "inline": True},
             {"name": "Name", "value": name, "inline": True},

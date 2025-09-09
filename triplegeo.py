@@ -24,8 +24,8 @@ def oui_lookup(mac):
     return vendors.get(prefix, "Unknown")
 
 class TripleGeo(plugins.Plugin):
-    __author__ = "disco252 & community"
-    __version__ = "1.5"
+    __author__ = "disco252"
+    __version__ = "1.6"
     __license__ = "GPL3"
     __description__ = (
         "Advanced geolocation, AP/client mapping, and Discord notifications for Pwnagotchi. "
@@ -43,8 +43,6 @@ class TripleGeo(plugins.Plugin):
         "wigle_delay": 2,
         "max_wigle_per_minute": 10,
         "wigle_upload": True,
-        "gpsd_host": "localhost",
-        "gpsd_port": 2947,
         "global_log_file": "/root/triplegeo_globalaplog.jsonl",
         "discord_webhook_url": "", # Add this to your config.toml!
     }
@@ -92,21 +90,11 @@ class TripleGeo(plugins.Plugin):
             logging.warning("[TripleGeo] gpsd-py3 module not found; GPS disabled.")
             return
         try:
-            # Debug the configuration values
-            host = self.options.get("gpsd_host", "localhost")
-            port = self.options.get("gpsd_port", 2947)
-            logging.info(f"[TripleGeo] DEBUG - Attempting to connect to GPSD at {host}:{port}")
-            logging.info(f"[TripleGeo] DEBUG - Host type: {type(host)}, Port type: {type(port)}")
+            # Hardcode GPSD connection (no config.toml dependency)
+            host = "localhost"
+            port = 2947
             
-            # Ensure host is a valid string
-            if host is None or host == "":
-                host = "localhost"
-                logging.warning(f"[TripleGeo] Host was None/empty, using localhost")
-            
-            if not isinstance(host, str):
-                host = str(host)
-                logging.warning(f"[TripleGeo] Host was not string, converted to: {host}")
-                
+            logging.info(f"[TripleGeo] Attempting to connect to GPSD at {host}:{port}")
             self.gps_session = gps.gps(host, port, mode=gps.WATCH_ENABLE)
             logging.info("[TripleGeo] Connected to gpsd for GPS.")
         except Exception as e:

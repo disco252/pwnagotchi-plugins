@@ -74,26 +74,26 @@ To verify, ensure your pwnagotchi has an internet connection, then check /merged
 
 ======================================================================================================================================================================================
 
-Fastergotchi, because why not?
-
-edit config.toml and add:
-
-personality.recon_time = 5
-
-personality.max_inactive_scale = 1
-
-personality.recon_inactive_multiplier = 1
-
-personality.hop_recon_time = 2
-
-personality.min_recon_time = 1
-
-personality.bored_num_epochs = 5
-
-personality.sad_num_epochs =  10
-
-personality.ap_ttl = 60 
-
-personality.sta_ttl = 120
+Fastergotchi, because why not?<br>
+edit config.toml and add:<br>
+personality.recon_time = 5<br>
+personality.max_inactive_scale = 1<br>
+personality.recon_inactive_multiplier = 1<br>
+personality.hop_recon_time = 2<br>
+personality.min_recon_time = 1<br>
+personality.bored_num_epochs = 5<br>
+personality.sad_num_epochs =  10<br>
+personality.ap_ttl = 60 <br>
+personality.sta_ttl = 120<br>
 
 ======================================================================================================================================================================================
+
+net_pos.py is based upon the original plugin, but it works, not calling for a toml table in config.toml. Use Google Geolocation API. 
+
+
+main.plugins.net-pos.enabled = true<br>
+main.plugins.net-pos.api_key = "AIzaSyBcLTRpiYAzijWQ64PnhplOoNXMU9rDhuM"<br>
+main.plugins.net-pos.loc_file = "/home/pi/.pwn/locations.json"<br>
+main.plugins.net-pos.update_interval = 300<br>
+
+

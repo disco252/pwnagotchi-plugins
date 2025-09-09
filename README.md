@@ -91,6 +91,8 @@ main.plugins.net-pos.update_interval = 300<br>
 
 ======================================================================================================================================================================================
 
+ble_wardrive.py will scan intermittently on it's own loop, below is an interval you can set. It will report what it sees on Discord. This does not interfere with any bluetooth tether.
+
 sudo pip3 install bleak requests
 
 

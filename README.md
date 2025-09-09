@@ -26,31 +26,19 @@ sudo systemctl start gpsd.service
 
 Here is an example of what needs to be in config.toml:
 
-main.plugins.triplegeo.enabled = true
-
-main.plugins.triplegeo.discord_webhook_url = "https://discord.com/api/webhookURL"
-
-main.plugins.triplegeo.google_api_key = "YOUR_GOOGLE_API_KEY"
-
-main.plugins.triplegeo.wigle_user = "YOUR_WIGLE_USERNAME"
-
-main.plugins.triplegeo.wigle_token = "YOUR_WIGLE_API_TOKEN"
-
-main.plugins.triplegeo.handshake_dir = "/home/pi/handshakes"
-
-main.plugins.triplegeo.wigle_upload = false  # disables auto-upload, set to true to enable
-
-main.plugins.triplegeo.wigle_delay = 2
-
-main.plugins.triplegeo.max_wigle_per_minute = 10
-
-main.plugins.triplegeo.wigle_upload = true
-
-main.plugins.triplegeo.gpsd_host = "localhost"
-
-main.plugins.triplegeo.gpsd_port = 2947
-
-main.plugins.triplegeo.global_log_file = "/root/triplegeo_globalaplog.jsonl"
+main.plugins.triplegeo.enabled = true<br>
+main.plugins.triplegeo.discord_webhook_url = "https://discord.com/api/webhookURL"<br>
+main.plugins.triplegeo.google_api_key = "YOUR_GOOGLE_API_KEY"<br>
+main.plugins.triplegeo.wigle_user = "YOUR_WIGLE_USERNAME"<br>
+main.plugins.triplegeo.wigle_token = "YOUR_WIGLE_API_TOKEN"<br>
+main.plugins.triplegeo.handshake_dir = "/home/pi/handshakes"<br>
+main.plugins.triplegeo.wigle_upload = false  # disables auto-upload, set to true to enable<br>
+main.plugins.triplegeo.wigle_delay = 2<br>
+main.plugins.triplegeo.max_wigle_per_minute = 10<br>
+main.plugins.triplegeo.wigle_upload = true<br>
+main.plugins.triplegeo.gpsd_host = "localhost"<br>
+main.plugins.triplegeo.gpsd_port = 2947<br>
+main.plugins.triplegeo.global_log_file = "/root/triplegeo_globalaplog.jsonl"<br>
 
 ======================================================================================================================================================================================
 
@@ -58,23 +46,15 @@ pcapmerger.py
 
 This is a plugin that will automatically merge captured WiFi handshakes, pcap files by both SSID and BSSID, ensuring only valid handshakes from the same network are combined. The output is /handshakes/merged, so ensure /merged/ is a created directory. Ensure there is internet over bluetooth tethering.
 
-Instructions:
+Instructions:<br>
+sudo apt-get update<br>
+sudo apt-get install tshark wireshark-common<br>
+Save pcapmerger.py in your /custom-plugins/ folder<br>
+Add your custom paths:<br>
+handshake_dir = "/your/path/to/handshakes"<br>
+output_dir = "/your/path/to/merged"<br>
 
-sudo apt-get update
-
-sudo apt-get install tshark wireshark-common
-
-Save pcapmerger.py in your /custom-plugins/ folder
-
-Add your custom paths:
-
-handshake_dir = "/your/path/to/handshakes"
-
-output_dir = "/your/path/to/merged"
-
-
-Edit your config.toml:
-
+Edit your config.toml:<br>
 main.plugins.pcapmerger.enabled = true 
 
 To verify, ensure your pwnagotchi has an internet connection, then check /merged/ output directory for newly merged .pcap files. You can also use journalctl | grep pcapmerger, or pwnagotchi --debug.

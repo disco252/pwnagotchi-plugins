@@ -6,7 +6,6 @@ import base64
 import time
 import threading
 import pwnagotchi.plugins as plugins
-
 try:
     import gps
     HAS_GPSD = True
@@ -80,13 +79,35 @@ class TripleGeo(plugins.Plugin):
         except Exception as e:
             logging.warning(f"[TripleGeo] Unable to load pending uploads: {e}")
 
+    def _save_pending(self):
+        try:
+            with open(self.options["pending_file"], "w") as f:
+                json.dump(self.pending, f)
+        except Exception as e:
+            logging.warning(f"[TripleGeo] Unable to save pending uploads: {e}")
+
     def connect_gpsd(self):
         if not HAS_GPSD:
             self.gps_session = None
             logging.warning("[TripleGeo] gpsd-py3 module not found; GPS disabled.")
             return
         try:
-            self.gps_session = gps.gps(self.options["gpsd_host"], self.options["gpsd_port"], mode=gps.WATCH_ENABLE)
+            # Debug the configuration values
+            host = self.options.get("gpsd_host", "localhost")
+            port = self.options.get("gpsd_port", 2947)
+            logging.info(f"[TripleGeo] DEBUG - Attempting to connect to GPSD at {host}:{port}")
+            logging.info(f"[TripleGeo] DEBUG - Host type: {type(host)}, Port type: {type(port)}")
+            
+            # Ensure host is a valid string
+            if host is None or host == "":
+                host = "localhost"
+                logging.warning(f"[TripleGeo] Host was None/empty, using localhost")
+            
+            if not isinstance(host, str):
+                host = str(host)
+                logging.warning(f"[TripleGeo] Host was not string, converted to: {host}")
+                
+            self.gps_session = gps.gps(host, port, mode=gps.WATCH_ENABLE)
             logging.info("[TripleGeo] Connected to gpsd for GPS.")
         except Exception as e:
             self.gps_session = None
@@ -212,5 +233,3 @@ class TripleGeo(plugins.Plugin):
                 logging.warning(f"[TripleGeo] Discord webhook failed: {resp.status_code} {resp.text}")
         except Exception as e:
             logging.error(f"[TripleGeo] Discord webhook error: {e}")
-
-    # ... (the rest of the original methods remain as above; not reprinted to save space)

@@ -15,6 +15,8 @@ sudo apt install gpsd gpsd-clients
 
 sudo apt install python3-gps(just incase, probably already there)
 
+sudo pip3 install gpsd-py3
+
 sudo nano /etc/default/gpsd<br>START_DAEMON="true"<br>USBAUTO="false"<br>DEVICES="/dev/ttyAMA0"<br>GPSD_OPTIONS="-n"<br>
 
 sudo systemctl enable gpsd.service<br>

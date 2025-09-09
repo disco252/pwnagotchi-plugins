@@ -11,43 +11,35 @@ This also uploads scan data to WiGLE for mapping.
 
 sudo apt update(never upgrade)
 
-sudo apt install gpsd gpsd-clients
-
-sudo apt install python3-gps(just incase, probably already there)
+sudo pip3 install requests
 
 sudo pip3 install gpsd-py3
 
-sudo nano /etc/default/gpsd<br>START_DAEMON="true"<br>USBAUTO="false"<br>DEVICES="/dev/ttyAMA0"<br>GPSD_OPTIONS="-n"<br>
-
+sudo apt-get install gpsd gpsd-clients<br>
+sudo systemctl disable gpsd.socket<br>
 sudo systemctl enable gpsd.service<br>
-sudo systemctl start gpsd.service
+sudo systemctl start gpsd.service<br>
 
-Every event is written to /root/triplegeo_globalaplog.jsonl<br>Will always have a complete record even if discord webhook fails.<br>
-Handshake filenames are appended to your pending uploads file at<br>
-/root/.triplegeo_pending<br>
-
-Processed handshakes are tracked in<br>
-/root/.triplegeo_processed
+Ensure GPS is connected, then point GPSD at the device using:<br>
+sudo gpsd /dev/ttyUSB0 -F /var/run/gpsd.sock
 
 
 Here is an example of what needs to be in config.toml:
 
 main.plugins.triplegeo.enabled = true<br>
-main.plugins.triplegeo.discord_webhook_url = "https://discord.com/api/webhookURL"<br>
-main.plugins.triplegeo.google_api_key = "YOUR_GOOGLE_API_KEY"<br>
-main.plugins.triplegeo.wigle_user = "YOUR_WIGLE_USERNAME"<br>
-main.plugins.triplegeo.wigle_token = "YOUR_WIGLE_API_TOKEN"<br>
-main.plugins.triplegeo.wigle_upload = false  # disables auto-upload, set to true to enable<br>
+main.plugins.triplegeo.mode = ["gps", "google", "wigle"]<br>
+main.plugins.triplegeo.google_api_key = ""<br>
+main.plugins.triplegeo.wigle_user = ""<br>
+main.plugins.triplegeo.wigle_token = ""<br>
 main.plugins.triplegeo.handshake_dir = "/home/pi/handshakes"<br>
-
-
-Optional:
-
 main.plugins.triplegeo.processed_file = "/root/.triplegeo_processed"<br>
-main.plugins.triplegeo.pending_file = "/root/.triplegeo_pending" <br>
-main.plugins.triplegeo.global_log_file = "/root/triplegeo_globalaplog.jsonl"<br>
+main.plugins.triplegeo.pending_file = "/root/.triplegeo_pending"<br>
 main.plugins.triplegeo.wigle_delay = 2<br>
 main.plugins.triplegeo.max_wigle_per_minute = 10<br>
+main.plugins.triplegeo.wigle_upload = true<br>
+main.plugins.triplegeo.global_log_file = "/root/triplegeo_globalaplog.jsonl"<br>
+main.plugins.triplegeo.discord_webhook_url = "https://discord.com/api/webhooks/XXX/YYY"<br>
+
 
 You may be required to edit "etc/hosts" to include UR.IP.XX.XX discord.com for the webhook to function.
 
@@ -88,7 +80,7 @@ personality.sta_ttl = 120<br>
 
 ======================================================================================================================================================================================
 
-net_pos.py is based upon the original plugin, but it works, not calling for a toml table in config.toml. Use Google Geolocation API. 
+net_pos.py is based upon the original plugin, but it works. Use Google Geolocation API. 
 
 
 main.plugins.net-pos.enabled = true<br>

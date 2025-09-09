@@ -16,37 +16,39 @@ def oui_lookup(mac):
 
 class TripleGeo(plugins.Plugin):
     __author__ = "disco252"
-    __version__ = "1.7"
+    __version__ = "1.8"
     __license__ = "GPL3"
     __description__ = (
-        "Advanced geolocation via GPS, Google, or Wigle; posts events to Discord."
+        "Geolocation via GPS, Google, or Wigle; posts handshake events to Discord."
     )
     __defaults__ = {
-        "enabled":         False,
-        "mode":            ["gps","google","wigle"],  # order of fallback
-        "google_api_key":  "",
-        "wigle_user":      "",
-        "wigle_token":     "",
-        "handshake_dir":   "/home/pi/handshakes",
-        "processed_file":  "/root/.triplegeo_processed",
-        "discord_webhook_url":"",
-        "global_log_file": "/root/triplegeo_globalaplog.jsonl",
+        "enabled":          False,
+        "mode":             ["gps","google","wigle"],
+        "gps_timeout":      5,        # seconds to wait for GPS fix
+        "google_api_key":   "",
+        "wigle_user":       "",
+        "wigle_token":      "",
+        "handshake_dir":    "/home/pi/handshakes",
+        "processed_file":   "/root/.triplegeo_processed",
+        "discord_webhook_url": "",
+        "global_log_file":  "/root/triplegeo_globalaplog.jsonl",
         "wigle_delay":      2,
-        "max_wigle_per_minute":10,
+        "max_wigle_per_minute": 10,
     }
 
     def __init__(self):
         super().__init__()
         self.processed = set()
         self.lock = threading.Lock()
-        self._load_processed()
         self.session = requests.Session()
+        self._load_processed()
 
     def _load_processed(self):
         try:
-            if os.path.exists(self.options["processed_file"]):
-                with open(self.options["processed_file"]) as f:
-                    self.processed = set(json.load(f))
+            with open(self.options["processed_file"]) as f:
+                self.processed = set(json.load(f))
+        except FileNotFoundError:
+            self.processed = set()
         except Exception as e:
             logging.warning(f"[TripleGeo] load processed: {e}")
 
@@ -58,9 +60,14 @@ class TripleGeo(plugins.Plugin):
             logging.warning(f"[TripleGeo] save processed: {e}")
 
     def on_internet_available(self, agent):
-        """Process any new .net-pos.json handshake files."""
+        """Process new .net-pos.json handshake files."""
         hd = self.options["handshake_dir"]
-        files = sorted(f for f in os.listdir(hd) if f.endswith(".net-pos.json"))
+        try:
+            files = sorted(f for f in os.listdir(hd) if f.endswith(".net-pos.json"))
+        except Exception as e:
+            logging.error(f"[TripleGeo] handshake_dir error: {e}")
+            return
+
         new = [f for f in files if f not in self.processed]
         if not new:
             return
@@ -75,16 +82,15 @@ class TripleGeo(plugins.Plugin):
                 self.processed.add(fname)
                 continue
 
-            # Determine geolocation via configured mode
             coord, source = self._geolocate(data)
             event = {
                 "timestamp": time.time(),
-                "ssid":      data.get("wifiAccessPoints",[])[0].get("ssid","N/A") if data.get("wifiAccessPoints") else "N/A",
-                "bssid":     data.get("wifiAccessPoints",[])[0].get("macAddress",""),
+                "ssid":      data["wifiAccessPoints"][0].get("ssid","N/A"),
+                "bssid":     data["wifiAccessPoints"][0].get("macAddress",""),
                 "lat":       coord[0],
                 "lon":       coord[1],
                 "source":    source,
-                "vendor":    oui_lookup(data.get("wifiAccessPoints",[])[0].get("macAddress","")),
+                "vendor":    oui_lookup(data["wifiAccessPoints"][0].get("macAddress","")),
                 "file":      fname,
             }
 
@@ -94,55 +100,69 @@ class TripleGeo(plugins.Plugin):
 
         self._save_processed()
 
-    def _geolocate(self, netpos_json):
-        """Try gpsd? (skipped), then Google, then Wigle."""
-        for m in self.options["mode"]:
-            if m == "google" and self.options["google_api_key"]:
-                coord = self._google_loc(netpos_json)
+    def _geolocate(self, data):
+        """Attempt GPS, then Google, then Wigle in order."""
+        for method in self.options["mode"]:
+            if method == "gps":
+                coord = self._try_gps()
+                if coord:
+                    return coord, "gps"
+            if method == "google" and self.options["google_api_key"]:
+                coord = self._google_loc(data)
                 if coord:
                     return coord, "google"
-            if m == "wigle" and self.options["wigle_user"]:
-                coord = self._wigle_loc(netpos_json)
+            if method == "wigle" and self.options["wigle_user"]:
+                coord = self._wigle_loc(data)
                 if coord:
                     return coord, "wigle"
-            # gps mode is no-op here; we skip it if no gpsd module
         return ("N/A","N/A"), "none"
+
+    def _try_gps(self):
+        """Non-blocking GPS fix with timeout."""
+        try:
+            import gps
+            session = gps.gps()
+            deadline = time.time() + self.options["gps_timeout"]
+            while time.time() < deadline:
+                report = session.next()
+                if report.get("class") == "TPV" and getattr(report, "mode", 1) >= 2:
+                    if hasattr(report, "lat") and hasattr(report, "lon"):
+                        return (float(report.lat), float(report.lon))
+        except Exception:
+            pass
+        return None
 
     def _google_loc(self, data):
         url = f"https://www.googleapis.com/geolocation/v1/geolocate?key={self.options['google_api_key']}"
         try:
             r = self.session.post(url, json={"wifiAccessPoints": data["wifiAccessPoints"]}, timeout=10)
             r.raise_for_status()
-            j = r.json().get("location")
-            return (j["lat"], j["lng"])
+            loc = r.json().get("location")
+            return (loc["lat"], loc["lng"])
         except Exception as e:
-            logging.warning(f"[TripleGeo] Google geolocate failed: {e}")
+            logging.warning(f"[TripleGeo] Google failed: {e}")
             return None
 
     def _wigle_loc(self, data):
-        # Simple Wigle API wrapper
         url = "https://api.wigle.net/api/v2/geo"
         auth = (self.options["wigle_user"], self.options["wigle_token"])
         try:
-            # only send BSSID list
             bssids = [ap["macAddress"] for ap in data["wifiAccessPoints"]]
             r = self.session.post(url, auth=auth, json={"netids": bssids}, timeout=10)
             r.raise_for_status()
             res = r.json()
             if res.get("results"):
-                lat = res["results"][0]["trilat"]
-                lon = res["results"][0]["trilong"]
-                return (lat, lon)
+                return (res["results"][0]["trilat"], res["results"][0]["trilong"])
         except Exception as e:
-            logging.warning(f"[TripleGeo] Wigle geolocate failed: {e}")
+            logging.warning(f"[TripleGeo] Wigle failed: {e}")
         return None
 
-    def _log_global(self, event):
+    def _log_global(self, ev):
         try:
             with open(self.options["global_log_file"], "a") as f:
-                f.write(json.dumps(event)+"\n")
+                f.write(json.dumps(ev)+"\n")
         except Exception as e:
-            logging.error(f"[TripleGeo] failed global log: {e}")
+            logging.error(f"[TripleGeo] global log: {e}")
 
     def _post_discord(self, ev):
         url = self.options.get("discord_webhook_url")
@@ -160,7 +180,7 @@ class TripleGeo(plugins.Plugin):
         ]
         payload = {"embeds":[{"title":":satellite: New Handshake","fields":fields}]}
         try:
-            r = self.session.post(url,json=payload,timeout=10)
+            r = self.session.post(url, json=payload, timeout=10)
             if not r.ok:
                 logging.warning(f"[TripleGeo] Webhook error: {r.status_code} {r.text}")
         except Exception as e:

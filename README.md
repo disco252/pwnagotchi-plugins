@@ -89,3 +89,12 @@ main.plugins.net-pos.loc_file = "/home/pi/.pwn/locations.json"<br>
 main.plugins.net-pos.update_interval = 300<br>
 
 
+======================================================================================================================================================================================
+
+sudo pip3 install bleak requests
+
+
+main.plugins.ble_wardrive.enabled = true<br>
+main.plugins.ble_wardrive.discord_webhook_url = "https://discord.com/api/webhooks/XXX/YYY"<br>
+main.plugins.ble_wardrive.scan_interval = 10<br>
+main.plugins.ble_wardrive.scan_duration = 5<br>

@@ -15,10 +15,11 @@ except ImportError:
 
 class BLEWardrive(plugins.Plugin):
     __author__ = "disco252"
-    __version__ = "1.4"
+    __version__ = "1.5"
     __license__ = "GPL3"
     __description__ = (
-        "Bluetooth LE wardriving plugin with GPS, device classification, IEEE OUI lookup, security, anomaly, and mesh detection."
+        "Bluetooth LE wardriving plugin with GPS, device classification, IEEE OUI lookup, "
+        "security, anomaly, and mesh network detection."
     )
     __name__ = "ble_wardrive"
     __defaults__ = {
@@ -165,9 +166,10 @@ class BLEWardrive(plugins.Plugin):
 
         ts = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
         coord = self._get_gps_fix() if self.options["use_gpsd"] else None
-        lat, lon = "N/A", "N/A"
+        lat, lon, alt, src = "N/A", "N/A", "N/A", "none"
         if coord:
-            lat, lon = coord[0], coord[1]
+            lat, lon, alt = coord
+            src = "gpsd"
         elif self.options["google_api_key"]:
             try:
                 res = requests.post(
@@ -177,30 +179,40 @@ class BLEWardrive(plugins.Plugin):
                 ).json()
                 loc = res.get("location", {})
                 lat, lon = loc.get("lat","N/A"), loc.get("lng","N/A")
+                src = "google"
             except Exception:
                 pass
 
-        message = (
-            f"📡 **BLE Device Detected**\n"
-            f"> **Address:** {device.address}\n"
-            f"> **Vendor:** {vendor}\n"
-            f"> **Name:** {device.name or '<Unknown>'}\n"
-            f"> **RSSI:** {rssi} dBm\n"
-            f"> **Type:** {classification}\n"
-            f"> **Mesh:** {is_mesh}\n"
-            f"> **Vulns:** {', '.join(vulnerabilities)}\n"
-            f"> **Anomalies:** {', '.join(anomalies)}\n"
-            f"> **Rogue:** {rogue}\n"
-            f"> **Time:** {ts}\n"
-            f"> **Lat/Lon:** {lat}, {lon}\n"
-        )
+        embed = {
+            "title": ":satellite: BLE Device",
+            "fields": [
+                {"name":"Address",          "value":device.address,                         "inline":True},
+                {"name":"Vendor",           "value":vendor,                                  "inline":True},
+                {"name":"Name",             "value":device.name or "<Unknown>",              "inline":True},
+                {"name":"RSSI",             "value":f"{rssi} dBm",                           "inline":True},
+                {"name":"Type",             "value":classification,                          "inline":True},
+                {"name":"Mesh Network",     "value":str(is_mesh),                            "inline":True},
+                {"name":"Vulnerabilities",  "value":", ".join(vulnerabilities),              "inline":False},
+                {"name":"Anomalies",        "value":", ".join(anomalies),                    "inline":False},
+                {"name":"Rogue",            "value":rogue,                                   "inline":True},
+                {"name":"Time",             "value":ts,                                      "inline":True},
+                {"name":"Latitude",         "value":str(lat),                                "inline":True},
+                {"name":"Longitude",        "value":str(lon),                                "inline":True},
+                {"name":"Altitude",         "value":str(alt),                                "inline":True},
+                {"name":"Location Source",  "value":src,                                      "inline":True},
+                {"name":"Manufacturer Data", "value":"; ".join(f"{m}: {bytes(v).hex()}" for m,v in (adv.manufacturer_data or {}).items()) or "None", "inline":False},
+            ],
+            "footer": {"text":f"ble_wardrive v{self.__version__}"}
+        }
+
+        payload = {"embeds":[embed], "content":""}
 
         try:
-            resp = requests.post(url, json={"content": message}, timeout=5)
-            if resp.status_code not in (200, 204):
-                logging.error(f"[BLEWardrive] Discord error {resp.status_code}: {resp.text}")
+            resp = requests.post(url, json=payload, timeout=5)
+            if resp.status_code not in (200,204):
+                logging.error(f"[BLEWardrive] Discord webhook error {resp.status_code}: {resp.text}")
             else:
-                logging.debug("[BLEWardrive] Message sent")
+                logging.debug("[BLEWardrive] Discord embed sent")
         except Exception as e:
             logging.error(f"[BLEWardrive] Webhook exception: {e}")
 

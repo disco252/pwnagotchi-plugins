@@ -91,7 +91,7 @@ main.plugins.net-pos.update_interval = 300<br>
 
 ======================================================================================================================================================================================
 
-ble_wardrive.py will scan on it's own loop, below is an interval you can set. It will report what it sees on Discord, RSSI, name, latitude, longitude and altitude. 
+ble_wardrive.py will scan on it's own loop, below is an interval you can set. It will report what it sees on Discord, RSSI, name, latitude, longitude, altitude(from gps or google api), device fingerprinting/classification, mesh network detection, vulnerability detection (static mac, weak names, services), anomaly detection(intervals and abnormal data), rogue device detection. 
 
 This does not interfere with any bluetooth tether. Note: This script in it's current state does not invoke the WiFi - Google Geolocation API is incomplete, however it functions via GPSD with a GPS dongle.
 

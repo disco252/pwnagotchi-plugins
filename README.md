@@ -91,7 +91,7 @@ main.plugins.net-pos.update_interval = 300<br>
 
 ======================================================================================================================================================================================
 
-ble_wardrive.py will scan on it's own loop, below is an interval you can set. It will report what it sees on Discord, RSSI, name, ;atitude, ;ongitude and altitude. 
+ble_wardrive.py will scan on it's own loop, below is an interval you can set. It will report what it sees on Discord, RSSI, name, latitude, longitude and altitude. 
 
 This does not interfere with any bluetooth tether. 
 

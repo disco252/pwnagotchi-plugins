@@ -5,7 +5,7 @@ triplegeo.py
 This a plugin that determines geolocation of captured WiFi handshakes. Requires net-pos.py
 It will first attempt to get coordinates via an attached GPS dongle, then it will fall back to Google's geolocation API, and finally queries the WiGLE API using BSSID data if the other options aren't available. Ensure there is internet over bluetooth tethering.
 
-This logs all seen APs, clients on every scan with current GPS location. Reports information to Discord via webhook.
+This logs all seen APs, clients on every scan with current GPS location with altitude. Reports information to Discord via webhook.
 
 This also uploads scan data to WiGLE for mapping.
 
@@ -91,7 +91,7 @@ main.plugins.net-pos.update_interval = 300<br>
 
 ======================================================================================================================================================================================
 
-ble_wardrive.py will scan on it's own loop, below is an interval you can set. It will report what it sees on Discord, RSSI, name, Latitude, Longitude and Altitude. 
+ble_wardrive.py will scan on it's own loop, below is an interval you can set. It will report what it sees on Discord, RSSI, name, ;atitude, ;ongitude and altitude. 
 
 This does not interfere with any bluetooth tether. 
 

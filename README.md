@@ -95,7 +95,7 @@ ble_wardrive.py will scan on it's own loop, below is an interval you can set. It
 
 This does not interfere with any bluetooth tether. Note: This script in it's current state does not invoke the WiFi - Google Geolocation API is incomplete, however it functions via GPSD with a GPS dongle.
 
-wget https://gitlab.com/wireshark/wireshark/-/raw/master/manuf -O /usr/local/share/pwnagotchi/oui_manuf.txt (downloads text database of MAC OUIs mapped to vendor names)
+sudo wget https://standards-oui.ieee.org/oui/oui.txt -O /usr/local/share/pwnagotchi/ieee_oui.txt
 
 
 sudo pip3 install bleak requests

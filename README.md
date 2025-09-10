@@ -102,5 +102,5 @@ main.plugins.ble_wardrive.enabled = true<br>
 main.plugins.ble_wardrive.discord_webhook_url = "https://discord.com/api/webhooks/XXX/YYY"<br>
 main.plugins.ble_wardrive.scan_interval = 10<br>
 main.plugins.ble_wardrive.scan_duration = 5<br>
-main.plugins.ble_wardrive.api_key = "GOOGLE GEO LOCATION API KEY"
+main.plugins.ble_wardrive.google_api_key = "GOOGLE GEO LOCATION API KEY"
 main.plugins.ble_wardrive.use_gpsd = true # or false, if false, will still attempt to use Google API "fallback"

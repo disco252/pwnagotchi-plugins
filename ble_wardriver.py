@@ -158,7 +158,8 @@ class BLEWardrive(plugins.Plugin):
         v = vendor.lower()
         return "YES" if any(k.lower() in v for k in rogue_keywords) else "NO"
 
-    def _report(self, device, adv, rssi, classification, vendor, vulnerabilities, anomalies, rogue, is_mesh):
+    def _report(self, device, adv, rssi, classification, vendor,
+                vulnerabilities, anomalies, rogue, is_mesh):
         url = self.options["discord_webhook_url"]
         if not url:
             logging.warning("[BLEWardrive] No Discord webhook URL configured")
@@ -166,8 +167,7 @@ class BLEWardrive(plugins.Plugin):
 
         ts = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
         coord = self._get_gps_fix() if self.options["use_gpsd"] else None
-        lat, lon, alt = "N/A", "N/A", "N/A"
-        src = "none"
+        lat, lon, alt, src = "N/A", "N/A", "N/A", "none"
         if coord:
             lat, lon, alt = coord
             src = "gpsd"
@@ -176,10 +176,8 @@ class BLEWardrive(plugins.Plugin):
                 res = requests.post(
                     "https://www.googleapis.com/geolocation/v1/geolocate",
                     params={"key": self.options["google_api_key"]},
-                    json={"considerIp": True},
-                    timeout=5
+                    json={"considerIp": True}, timeout=5
                 )
-                logging.debug(f"[BLEWardrive] Google API returned {res.status_code}")
                 data = res.json()
                 loc = data.get("location", {})
                 lat, lon = loc.get("lat","N/A"), loc.get("lng","N/A")
@@ -188,24 +186,30 @@ class BLEWardrive(plugins.Plugin):
                 logging.warning(f"[BLEWardrive] Google geoloc failed: {e}")
 
         fields = [
-            {"name": "Address", "value": device.address, "inline": True},
-            {"name": "Vendor",  "value": vendor,          "inline": True},
-            {"name": "Name",    "value": device.name or "<Unknown>", "inline": True},
-            {"name": "RSSI",    "value": f"{rssi} dBm",  "inline": True},
-            {"name": "Type",    "value": classification, "inline": True},
-            {"name": "Mesh Network", "value": str(is_mesh), "inline": True},
-            {"name": "Vulnerabilities", "value": ", ".join(vulnerabilities), "inline": False},
-            {"name": "Anomalies",       "value": ", ".join(anomalies),       "inline": False},
-            {"name": "Rogue",           "value": rogue,           "inline": True},
-            {"name": "Time",            "value": ts,              "inline": True},
-            {"name": "Latitude",        "value": lat,             "inline": True},
-            {"name": "Longitude",       "value": lon,             "inline": True},
-            {"name": "Altitude",        "value": alt,             "inline": True},
-            {"name": "Location Source", "value": src,             "inline": True},
+            {"name":"Address","value":device.address,"inline":True},
+            {"name":"Vendor","value":vendor,"inline":True},
+            {"name":"Name","value":device.name or "<Unknown>","inline":True},
+            {"name":"RSSI","value":f"{rssi} dBm","inline":True},
+            {"name":"Type","value":classification,"inline":True},
+            {"name":"Mesh Network","value":str(is_mesh),"inline":True},
+            {"name":"Vulnerabilities","value":", ".join(vulnerabilities),"inline":False},
+            {"name":"Anomalies","value":", ".join(anomalies),"inline":False},
+            {"name":"Rogue","value":rogue,"inline":True},
+            {"name":"Time","value":ts,"inline":True},
+            {"name":"Latitude","value":lat,"inline":True},
+            {"name":"Longitude","value":lon,"inline":True},
+            {"name":"Altitude","value":alt,"inline":True},
+            {"name":"Location Source","value":src,"inline":True},
         ]
+
         payload = {
+            "content": "",
             "embeds": [
-                {"title": ":satellite: BLE Device", "fields": fields, "footer": {"text": f"ble_wardrive v{self.__version__}"}}
+                {
+                    "title": ":satellite: BLE Device",
+                    "fields": fields,
+                    "footer": {"text": f"ble_wardrive v{self.__version__}"}
+                }
             ]
         }
 

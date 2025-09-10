@@ -14,7 +14,7 @@ except ImportError:
     HAS_GPSD = False
 
 class BLEWardrive(plugins.Plugin):
-    __author__ = "YourName"
+    __author__ = "disco252"
     __version__ = "1.4"
     __license__ = "GPL3"
     __description__ = (

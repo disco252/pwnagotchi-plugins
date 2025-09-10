@@ -91,7 +91,9 @@ main.plugins.net-pos.update_interval = 300<br>
 
 ======================================================================================================================================================================================
 
-ble_wardrive.py will scan on it's own loop, below is an interval you can set. It will report what it sees on Discord. This does not interfere with any bluetooth tether.
+ble_wardrive.py will scan on it's own loop, below is an interval you can set. It will report what it sees on Discord, RSSI, name, Latitude, Longitude and Altitude. 
+
+This does not interfere with any bluetooth tether. 
 
 sudo pip3 install bleak requests
 
@@ -100,3 +102,5 @@ main.plugins.ble_wardrive.enabled = true<br>
 main.plugins.ble_wardrive.discord_webhook_url = "https://discord.com/api/webhooks/XXX/YYY"<br>
 main.plugins.ble_wardrive.scan_interval = 10<br>
 main.plugins.ble_wardrive.scan_duration = 5<br>
+main.plugins.ble_wardrive.api_key = "GOOGLE GEO LOCATION API KEY"
+main.plugins.ble_wardrive.use_gpsd = true # or false, if false, will still attempt to use Google API "fallback"

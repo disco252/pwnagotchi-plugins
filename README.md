@@ -5,11 +5,13 @@ triplegeo.py
 This a plugin that determines geolocation of captured WiFi handshakes.
 It will first attempt to get coordinates via an attached GPS dongle, then it will fall back to Google's geolocation API, and finally queries the WiGLE API using BSSID data if the other options aren't available. Ensure there is internet over bluetooth tethering.
 
-This script outputs SSID, BSSID, Client, Vendor, Signal, SNR, Channel, Frequency, Band, Encryption, Latitude, Longitude, Altitude(and from what source) Supported Rates, VendorTags, Timestamp, Device fingerprint and the associated .pcap file name to Discord.
+This script outputs SSID, BSSID, Client, Vendor, Signal, SNR, Channel, Frequency, Band, Encryption, Latitude, Longitude, Altitude(and from what source) Supported Rates, VendorTags, Timestamp, OUI lookup, Device fingerprint and the associated .pcap file name to Discord.
 
 This also uploads scan data to WiGLE for mapping.
 
 sudo apt update(never upgrade)
+
+sudo wget https://standards-oui.ieee.org/oui/oui.txt -O /usr/local/share/pwnagotchi/ieee_oui.txt
 
 sudo pip3 install requests
 

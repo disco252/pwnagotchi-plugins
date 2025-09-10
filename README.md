@@ -107,3 +107,6 @@ main.plugins.ble_wardrive.scan_interval = 10<br>
 main.plugins.ble_wardrive.scan_duration = 5<br>
 main.plugins.ble_wardrive.google_api_key = "GOOGLE GEO LOCATION API KEY"
 main.plugins.ble_wardrive.use_gpsd = true # or false, if false, will still attempt to use Google API "fallback"
+main.plugins.ble_wardrive.oui_db_path = "/usr/local/share/pwnagotchi/ieee_oui.txt"
+main.plugins.ble_wardrive.oui_update_url = "https://standards-oui.ieee.org/oui/oui.txt"
+main.plugins.ble_wardrive.auto_update_oui = true

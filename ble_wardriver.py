@@ -15,10 +15,10 @@ except ImportError:
 
 class BLEWardrive(plugins.Plugin):
     __author__ = "YourName"
-    __version__ = "1.3"
+    __version__ = "1.4"
     __license__ = "GPL3"
     __description__ = (
-        "Bluetooth LE wardriving plugin with GPS, device classification, dynamic OUI lookup, security, anomaly, and mesh network detection."
+        "Bluetooth LE wardriving plugin with GPS, device classification, dynamic IEEE OUI lookup, security, anomaly, and mesh network detection."
     )
     __name__ = "ble_wardrive"
     __defaults__ = {
@@ -28,7 +28,9 @@ class BLEWardrive(plugins.Plugin):
         "scan_duration": 5,
         "use_gpsd": True,
         "google_api_key": "",
-        "oui_db_path": "/usr/local/share/pwnagotchi/oui_manuf.txt",
+        "oui_db_path": "/usr/local/share/pwnagotchi/ieee_oui.txt",
+        "oui_update_url": "https://standards-oui.ieee.org/oui/oui.txt",
+        "auto_update_oui": True,
     }
 
     def __init__(self):
@@ -38,26 +40,106 @@ class BLEWardrive(plugins.Plugin):
         self.stop_event = threading.Event()
         self.gps_session = None
         self.last_fix = None
-        self.oui_db = self._load_oui_db(self.options.get("oui_db_path"))
+        self.oui_db = self._load_or_update_oui_db()
 
-    def _load_oui_db(self, db_path):
+    def _download_oui_db(self):
+        """Download the latest IEEE OUI database"""
+        try:
+            url = self.options["oui_update_url"]
+            db_path = self.options["oui_db_path"]
+            logging.info(f"[BLEWardrive] Downloading OUI database from {url}")
+            
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+            
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(db_path), exist_ok=True)
+            
+            with open(db_path, 'w', encoding='utf-8') as f:
+                f.write(response.text)
+            
+            logging.info(f"[BLEWardrive] OUI database downloaded to {db_path}")
+            return True
+        except Exception as e:
+            logging.error(f"[BLEWardrive] Failed to download OUI database: {e}")
+            return False
+
+    def _load_or_update_oui_db(self):
+        """Load OUI database, downloading if needed or requested"""
+        db_path = self.options["oui_db_path"]
+        
+        # Check if we need to download
+        if self.options.get("auto_update_oui", True):
+            if not os.path.exists(db_path):
+                logging.info("[BLEWardrive] OUI database not found, downloading...")
+                self._download_oui_db()
+            else:
+                # Check age - update if older than 30 days
+                try:
+                    age = time.time() - os.path.getmtime(db_path)
+                    if age > (30 * 24 * 3600):  # 30 days
+                        logging.info("[BLEWardrive] OUI database is old, updating...")
+                        self._download_oui_db()
+                except OSError:
+                    pass
+        
+        return self._parse_ieee_oui_db(db_path)
+
+    def _parse_ieee_oui_db(self, db_path):
+        """Parse the IEEE OUI database format"""
         oui_dict = {}
         if not os.path.exists(db_path):
             logging.warning(f"[BLEWardrive] OUI database file not found: {db_path}")
             return oui_dict
-        with open(db_path) as f:
-            for line in f:
-                if line.startswith('#') or ' ' not in line:
-                    continue
-                parts = line.strip().split()
-                oui = parts[0].replace(":", "").upper()
-                vendor = parts[1]
-                oui_dict[oui[:6]] = vendor
-        logging.info(f"[BLEWardrive] Loaded {len(oui_dict)} OUIs from Wireshark database")
+        
+        try:
+            with open(db_path, 'r', encoding='utf-8', errors='ignore') as f:
+                current_oui = None
+                
+                for line in f:
+                    line = line.strip()
+                    
+                    # Skip empty lines and headers
+                    if not line or line.startswith('OUI/MA-L') or line.startswith('company_id'):
+                        continue
+                    
+                    # Look for hex OUI lines like "28-6F-B9   (hex)		Nokia Shanghai Bell Co., Ltd."
+                    if '(hex)' in line and '\t' in line:
+                        parts = line.split('\t')
+                        if len(parts) >= 2:
+                            oui_part = parts[0].strip()
+                            vendor_part = parts[-1].strip()
+                            
+                            # Extract OUI (first part before "(hex)")
+                            if '(hex)' in oui_part:
+                                oui = oui_part.split('(hex)')[0].strip()
+                                oui = oui.replace('-', '').replace(':', '').upper()
+                                if len(oui) >= 6:
+                                    oui_dict[oui[:6]] = vendor_part
+                    
+                    # Also look for base 16 lines like "286FB9     (base 16)		Nokia Shanghai Bell Co., Ltd."
+                    elif '(base 16)' in line and '\t' in line:
+                        parts = line.split('\t')
+                        if len(parts) >= 2:
+                            oui_part = parts[0].strip()
+                            vendor_part = parts[-1].strip()
+                            
+                            # Extract OUI (first part before "(base 16)")
+                            if '(base 16)' in oui_part:
+                                oui = oui_part.split('(base 16)')[0].strip()
+                                oui = oui.replace('-', '').replace(':', '').upper()
+                                if len(oui) >= 6:
+                                    oui_dict[oui[:6]] = vendor_part
+                                    
+        except Exception as e:
+            logging.error(f"[BLEWardrive] Error parsing OUI database: {e}")
+        
+        logging.info(f"[BLEWardrive] Loaded {len(oui_dict)} OUIs from IEEE database")
         return oui_dict
 
     def _lookup_oui_vendor(self, mac_addr):
-        oui = mac_addr.replace(":", "").upper()[:6]
+        """Look up vendor for a given MAC address"""
+        oui = mac_addr.replace(":", "").replace("-", "").upper()[:6]
         return self.oui_db.get(oui, "Unknown")
 
     def on_loaded(self):
@@ -155,11 +237,16 @@ class BLEWardrive(plugins.Plugin):
 
     def _detect_rogue_device(self, device, vendor):
         rogue_vendors = {
-            "Espressif", "Tuya", "Shenzhen Bilian", "Ubiquiti", "ALFA", "Raspberry Pi Foundation",
-            "Generic", "Unknown", "Xiaomi", "Yeelink", "TP-LINK", "Test", "Demo", "Fake"
+            "Espressif Inc.", "Tuya", "Shenzhen", "Ubiquiti", "ALFA", "Raspberry Pi Foundation",
+            "Generic", "Unknown", "Xiaomi", "Yeelink", "TP-LINK", "Test", "Demo", "Fake",
+            # Add more based on the actual vendor names from IEEE database
+            "Private", "IEEE Registration Authority"
         }
-        if vendor in rogue_vendors:
-            return f"YES ({vendor})"
+        # Check if vendor contains any rogue keywords
+        vendor_lower = vendor.lower()
+        for rogue in rogue_vendors:
+            if rogue.lower() in vendor_lower:
+                return f"YES ({vendor})"
         return f"NO ({vendor})"
 
     def _is_static_mac(self, mac):
@@ -211,6 +298,7 @@ class BLEWardrive(plugins.Plugin):
             requests.post(url, json=payload, timeout=5)
         except Exception as e:
             logging.error("[BLEWardrive] Webhook error: %s", e)
+
     def on_unload(self, ui):
         self.stop_event.set()
         if self.loop:

@@ -15,10 +15,10 @@ except ImportError:
 
 class BLEWardrive(plugins.Plugin):
     __author__ = "YourName"
-    __version__ = "1.3"
+    __version__ = "1.4"
     __license__ = "GPL3"
     __description__ = (
-        "Bluetooth LE wardriving plugin with GPS, device classification, dynamic IEEE OUI lookup, and security/anomaly/mesh detection."
+        "Bluetooth LE wardriving plugin with GPS, device classification, IEEE OUI lookup, security, anomaly, and mesh detection."
     )
     __name__ = "ble_wardrive"
     __defaults__ = {
@@ -51,14 +51,14 @@ class BLEWardrive(plugins.Plugin):
                 if '(hex)' in line:
                     parts = line.split('(hex)')
                     oui = parts[0].strip().replace('-', '').upper()
-                    vendor = parts[1].split('\t')[-1].strip()
+                    vendor = parts[-1].strip()
                     if len(oui) >= 6:
                         oui_dict[oui[:6]] = vendor
         logging.info(f"[BLEWardrive] Loaded {len(oui_dict)} OUIs from IEEE database")
         return oui_dict
 
     def _lookup_oui_vendor(self, mac_addr):
-        oui = mac_addr.replace(":", "").upper()[:6]
+        oui = mac_addr.replace(":", "").replace("-", "").upper()[:6]
         return self.oui_db.get(oui, "Unknown")
 
     def on_loaded(self):
@@ -97,23 +97,76 @@ class BLEWardrive(plugins.Plugin):
     async def _scan_loop(self):
         interval = self.options["scan_interval"]
         duration = self.options["scan_duration"]
+        mesh_uuids = {"00001827-0000-1000-8000-00805f9b34fb", "00001828-0000-1000-8000-00805f9b34fb"}
         while not self.stop_event.is_set():
+            logging.debug(f"[BLEWardrive] Scanning for {duration}s")
             devices = await BleakScanner.discover(timeout=duration, return_adv=True)
+            logging.debug(f"[BLEWardrive] Found {len(devices)} devices")
             for _, (device, adv) in devices.items():
                 rssi = getattr(adv, "rssi", None) or getattr(device, "rssi", None)
                 if rssi is None:
                     continue
+                classification = self._classify_device(device, adv)
+                vulnerabilities = self._detect_vulnerabilities(device, adv)
+                anomalies = self._detect_anomalies(device, adv)
                 vendor = self._lookup_oui_vendor(device.address)
-                self._report(device, adv, rssi, vendor)
+                rogue = self._detect_rogue_device(vendor)
+                is_mesh = bool(set(adv.service_uuids or []).intersection(mesh_uuids))
+                self._report(device, adv, rssi, classification, vendor, vulnerabilities, anomalies, rogue, is_mesh)
             await asyncio.sleep(interval)
 
-    def _report(self, device, adv, rssi, vendor):
+    def _classify_device(self, device, adv):
+        mfg = adv.manufacturer_data or {}
+        if 0x004C in mfg:
+            return "Apple Device"
+        if 0x00E0 in mfg:
+            return "Android/Google Device"
+        if device.name:
+            ln = device.name.lower()
+            if "fitbit" in ln:
+                return "Fitness Tracker"
+            if "temp" in ln or "sensor" in ln:
+                return "IoT Sensor"
+        return "Unknown"
+
+    def _detect_vulnerabilities(self, device, adv):
+        vulns = []
+        if adv.service_uuids and "00001800-0000-1000-8000-00805f9b34fb" in adv.service_uuids:
+            vulns.append("Exposed Generic Access Service")
+        first_octet = int(device.address.split(":")[0], 16)
+        if not (first_octet & 0xC0 == 0xC0):
+            vulns.append("Static MAC Address (trackable)")
+        if device.name and any(x in device.name.lower() for x in ("default", "test", "demo")):
+            vulns.append("Weak Device Name")
+        return vulns or ["None"]
+
+    def _detect_anomalies(self, device, adv):
+        alerts = []
+        interval = getattr(adv, "interval", None)
+        if interval is not None and interval < 20:
+            alerts.append("Unusually short advertising interval")
+        for v in (adv.manufacturer_data or {}).values():
+            if len(v) > 32:
+                alerts.append("Abnormally large manufacturer data")
+        return alerts or ["None"]
+
+    def _detect_rogue_device(self, vendor):
+        rogue_keywords = [
+            "Espressif", "Tuya", "Shenzhen", "Ubiquiti", "ALFA", "Raspberry",
+            "Generic", "Unknown", "Xiaomi", "Yeelink", "TP-LINK", "Test", "Demo", "Private"
+        ]
+        v = vendor.lower()
+        return "YES" if any(k.lower() in v for k in rogue_keywords) else "NO"
+
+    def _report(self, device, adv, rssi, classification, vendor, vulnerabilities, anomalies, rogue, is_mesh):
         url = self.options["discord_webhook_url"]
         if not url:
+            logging.warning("[BLEWardrive] No Discord webhook URL configured")
             return
+
         ts = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
         coord = self._get_gps_fix() if self.options["use_gpsd"] else None
-        lat, lon, alt = ("N/A","N/A","N/A")
+        lat, lon, alt = "N/A", "N/A", "N/A"
         src = "none"
         if coord:
             lat, lon, alt = coord
@@ -125,32 +178,45 @@ class BLEWardrive(plugins.Plugin):
                     params={"key": self.options["google_api_key"]},
                     json={"considerIp": True},
                     timeout=5
-                ).json()
-                loc = res.get("location", {})
+                )
+                logging.debug(f"[BLEWardrive] Google API returned {res.status_code}")
+                data = res.json()
+                loc = data.get("location", {})
                 lat, lon = loc.get("lat","N/A"), loc.get("lng","N/A")
                 src = "google"
             except Exception as e:
                 logging.warning(f"[BLEWardrive] Google geoloc failed: {e}")
 
         fields = [
-            {"name":"Address","value":device.address,"inline":True},
-            {"name":"Vendor","value":vendor,"inline":True},
-            {"name":"RSSI","value":f"{rssi} dBm","inline":True},
-            {"name":"Time","value":ts,"inline":True},
-            {"name":"Latitude","value":str(lat),"inline":True},
-            {"name":"Longitude","value":str(lon),"inline":True},
-            {"name":"Altitude","value":str(alt),"inline":True},
-            {"name":"Location Source","value":src,"inline":True},
+            {"name": "Address", "value": device.address, "inline": True},
+            {"name": "Vendor",  "value": vendor,          "inline": True},
+            {"name": "Name",    "value": device.name or "<Unknown>", "inline": True},
+            {"name": "RSSI",    "value": f"{rssi} dBm",  "inline": True},
+            {"name": "Type",    "value": classification, "inline": True},
+            {"name": "Mesh Network", "value": str(is_mesh), "inline": True},
+            {"name": "Vulnerabilities", "value": ", ".join(vulnerabilities), "inline": False},
+            {"name": "Anomalies",       "value": ", ".join(anomalies),       "inline": False},
+            {"name": "Rogue",           "value": rogue,           "inline": True},
+            {"name": "Time",            "value": ts,              "inline": True},
+            {"name": "Latitude",        "value": lat,             "inline": True},
+            {"name": "Longitude",       "value": lon,             "inline": True},
+            {"name": "Altitude",        "value": alt,             "inline": True},
+            {"name": "Location Source", "value": src,             "inline": True},
         ]
         payload = {
             "embeds": [
-                {"title":":satellite: BLE Device", "fields": fields, "footer": {"text": f"ble_wardrive v{self.__version__}"}}
+                {"title": ":satellite: BLE Device", "fields": fields, "footer": {"text": f"ble_wardrive v{self.__version__}"}}
             ]
         }
+
         try:
-            requests.post(url, json=payload, timeout=5)
+            resp = requests.post(url, json=payload, timeout=5)
+            if resp.status_code not in (200, 204):
+                logging.error(f"[BLEWardrive] Discord webhook error {resp.status_code}: {resp.text}")
+            else:
+                logging.debug("[BLEWardrive] Discord post successful")
         except Exception as e:
-            logging.error(f"[BLEWardrive] Webhook error: {e}")
+            logging.error(f"[BLEWardrive] Webhook exception: {e}")
 
     def on_unload(self, ui):
         self.stop_event.set()

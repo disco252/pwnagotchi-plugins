@@ -99,9 +99,7 @@ class BLEWardrive(plugins.Plugin):
         duration = self.options["scan_duration"]
         mesh_uuids = {"00001827-0000-1000-8000-00805f9b34fb", "00001828-0000-1000-8000-00805f9b34fb"}
         while not self.stop_event.is_set():
-            logging.debug(f"[BLEWardrive] Scanning for {duration}s")
             devices = await BleakScanner.discover(timeout=duration, return_adv=True)
-            logging.debug(f"[BLEWardrive] Found {len(devices)} devices")
             for _, (device, adv) in devices.items():
                 rssi = getattr(adv, "rssi", None) or getattr(device, "rssi", None)
                 if rssi is None:
@@ -167,58 +165,42 @@ class BLEWardrive(plugins.Plugin):
 
         ts = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
         coord = self._get_gps_fix() if self.options["use_gpsd"] else None
-        lat, lon, alt, src = "N/A", "N/A", "N/A", "none"
+        lat, lon = "N/A", "N/A"
         if coord:
-            lat, lon, alt = coord
-            src = "gpsd"
+            lat, lon = coord[0], coord[1]
         elif self.options["google_api_key"]:
             try:
                 res = requests.post(
                     "https://www.googleapis.com/geolocation/v1/geolocate",
                     params={"key": self.options["google_api_key"]},
                     json={"considerIp": True}, timeout=5
-                )
-                data = res.json()
-                loc = data.get("location", {})
+                ).json()
+                loc = res.get("location", {})
                 lat, lon = loc.get("lat","N/A"), loc.get("lng","N/A")
-                src = "google"
-            except Exception as e:
-                logging.warning(f"[BLEWardrive] Google geoloc failed: {e}")
+            except Exception:
+                pass
 
-        fields = [
-            {"name":"Address","value":device.address,"inline":True},
-            {"name":"Vendor","value":vendor,"inline":True},
-            {"name":"Name","value":device.name or "<Unknown>","inline":True},
-            {"name":"RSSI","value":f"{rssi} dBm","inline":True},
-            {"name":"Type","value":classification,"inline":True},
-            {"name":"Mesh Network","value":str(is_mesh),"inline":True},
-            {"name":"Vulnerabilities","value":", ".join(vulnerabilities),"inline":False},
-            {"name":"Anomalies","value":", ".join(anomalies),"inline":False},
-            {"name":"Rogue","value":rogue,"inline":True},
-            {"name":"Time","value":ts,"inline":True},
-            {"name":"Latitude","value":lat,"inline":True},
-            {"name":"Longitude","value":lon,"inline":True},
-            {"name":"Altitude","value":alt,"inline":True},
-            {"name":"Location Source","value":src,"inline":True},
-        ]
-
-        payload = {
-            "content": "",
-            "embeds": [
-                {
-                    "title": ":satellite: BLE Device",
-                    "fields": fields,
-                    "footer": {"text": f"ble_wardrive v{self.__version__}"}
-                }
-            ]
-        }
+        message = (
+            f"📡 **BLE Device Detected**\n"
+            f"> **Address:** {device.address}\n"
+            f"> **Vendor:** {vendor}\n"
+            f"> **Name:** {device.name or '<Unknown>'}\n"
+            f"> **RSSI:** {rssi} dBm\n"
+            f"> **Type:** {classification}\n"
+            f"> **Mesh:** {is_mesh}\n"
+            f"> **Vulns:** {', '.join(vulnerabilities)}\n"
+            f"> **Anomalies:** {', '.join(anomalies)}\n"
+            f"> **Rogue:** {rogue}\n"
+            f"> **Time:** {ts}\n"
+            f"> **Lat/Lon:** {lat}, {lon}\n"
+        )
 
         try:
-            resp = requests.post(url, json=payload, timeout=5)
+            resp = requests.post(url, json={"content": message}, timeout=5)
             if resp.status_code not in (200, 204):
-                logging.error(f"[BLEWardrive] Discord webhook error {resp.status_code}: {resp.text}")
+                logging.error(f"[BLEWardrive] Discord error {resp.status_code}: {resp.text}")
             else:
-                logging.debug("[BLEWardrive] Discord post successful")
+                logging.debug("[BLEWardrive] Message sent")
         except Exception as e:
             logging.error(f"[BLEWardrive] Webhook exception: {e}")
 

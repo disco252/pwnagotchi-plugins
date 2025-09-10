@@ -13,20 +13,13 @@ try:
 except ImportError:
     HAS_GPSD = False
 
-def oui_lookup(mac):
-    vendors = {
-        "00:11:22": "VendorA Inc.",
-        "AA:BB:CC": "VendorB Corp.",
-    }
-    return vendors.get((mac or "").upper()[:8], "Unknown")
-
 class TripleGeo(plugins.Plugin):
     __author__ = "disco252"
     __version__ = "1.6"
     __license__ = "GPL3"
     __description__ = (
         "Advanced geolocation, AP/client mapping, and Discord notifications for Pwnagotchi. "
-        "Uses GPS, Google, or WiGLE; posts detailed events to Discord."
+        "Uses GPS, Google, or WiGLE; posts detailed events to Discord with IEEE OUI lookup."
     )
     __name__ = "triplegeo"
     __defaults__ = {
@@ -43,6 +36,7 @@ class TripleGeo(plugins.Plugin):
         "wigle_upload":        True,
         "global_log_file":     "/root/triplegeo_globalaplog.jsonl",
         "discord_webhook_url": "",
+        "oui_db_path":         "/usr/local/share/pwnagotchi/ieee_oui.txt",
     }
 
     def __init__(self):
@@ -53,13 +47,45 @@ class TripleGeo(plugins.Plugin):
         self.pending     = []
         self.gps_session = None
         self._gps_last   = None
+        self.oui_db      = {}
+
+    def _load_oui_db(self, db_path):
+        """Load IEEE OUI database from file"""
+        oui_dict = {}
+        if not os.path.exists(db_path):
+            logging.warning(f"[TripleGeo] OUI database file not found: {db_path}")
+            return oui_dict
+        
+        with open(db_path, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                line = line.strip()
+                if '(hex)' in line:
+                    parts = line.split('(hex)')
+                    oui = parts[0].strip().replace('-', '').upper()
+                    vendor = parts[-1].strip()
+                    if len(oui) >= 6:
+                        oui_dict[oui[:6]] = vendor
+        
+        logging.info(f"[TripleGeo] Loaded {len(oui_dict)} OUIs from IEEE database")
+        return oui_dict
+
+    def _lookup_oui_vendor(self, mac_addr):
+        """Look up vendor for a given MAC address"""
+        if not mac_addr:
+            return "Unknown"
+        oui = mac_addr.replace(":", "").replace("-", "").upper()[:6]
+        return self.oui_db.get(oui, "Unknown")
 
     def on_loaded(self):
         for key, val in self.__defaults__.items():
             self.options.setdefault(key, val)
+
+        # Load OUI database
+        self.oui_db = self._load_oui_db(self.options["oui_db_path"])
+
         self._load_storage()
         self._connect_gpsd()
-        logging.info("[TripleGeo] Plugin loaded successfully.")
+        logging.info(f"[TripleGeo] Plugin loaded successfully with {len(self.oui_db)} OUIs.")
         self._report_existing_coords()
 
     def _report_existing_coords(self):
@@ -91,7 +117,6 @@ class TripleGeo(plugins.Plugin):
                     name = os.path.basename(coord_file).rsplit(".coord.json", 1)[0]
 
                 ssid = name.split("_", 1)[0]
-
                 event = {
                     "timestamp":         time.time(),
                     "ssid":              ssid,
@@ -127,6 +152,7 @@ class TripleGeo(plugins.Plugin):
                     self.processed = set(json.load(f))
             except Exception as e:
                 logging.warning(f"[TripleGeo] load processed: {e}")
+
         pend = self.options["pending_file"]
         if os.path.exists(pend):
             try:
@@ -146,6 +172,7 @@ class TripleGeo(plugins.Plugin):
         if not HAS_GPSD:
             logging.warning("[TripleGeo] gpsd-py3 module not found; GPS disabled.")
             return
+
         try:
             logging.info("[TripleGeo] Connecting to local gpsd socket")
             self.gps_session = gps.gps()
@@ -157,6 +184,7 @@ class TripleGeo(plugins.Plugin):
     def get_gps_coord(self, max_attempts=10):
         if not self.gps_session:
             return self._gps_last
+
         try:
             for _ in range(max_attempts):
                 report = self.gps_session.next()
@@ -171,6 +199,7 @@ class TripleGeo(plugins.Plugin):
                     return self._gps_last
         except Exception as e:
             logging.warning(f"[TripleGeo] GPS exception: {e}")
+
         return self._gps_last
 
     def _geolocate(self, data):
@@ -193,6 +222,7 @@ class TripleGeo(plugins.Plugin):
         logging.info(f"AP entry keys: {ap_list.keys()}")
         gps_coord = self.get_gps_coord() if HAS_GPSD else None
         now = time.time()
+
         for ap in ap_list:
             key = f"{ap.get('mac')}|{ap.get('hostname')}|{ap.get('client')}"
             if key not in self.processed:
@@ -202,11 +232,13 @@ class TripleGeo(plugins.Plugin):
                 snr   = "N/A"
                 if isinstance(rssi, (int,float)) and isinstance(noise, (int,float)):
                     snr = rssi - noise
+
                 # frequency & band
                 freq = ap.get("frequency")
                 band = "unknown"
                 if isinstance(freq, (int,float)):
                     band = "2.4 GHz" if freq < 3000 else "5 GHz" if freq < 6000 else "6 GHz"
+
                 entry = {
                     "timestamp":        now,
                     "ssid":             ap.get("hostname", "<unknown>"),
@@ -222,30 +254,34 @@ class TripleGeo(plugins.Plugin):
                     "lon":              gps_coord[1] if gps_coord else "N/A",
                     "altitude":         gps_coord[2] if gps_coord and len(gps_coord) > 2 else "N/A",
                     "source":           "gpsd" if gps_coord else "none",
-                    "vendor":           oui_lookup(ap.get("mac", "")),
+                    "vendor":           self._lookup_oui_vendor(ap.get("mac", "")),
                     "supported_rates":            ap.get("supported_rates", []),
                     "extended_supported_rates":   ap.get("extended_supported_rates", []),
                     "vendor_specific_tags":       ap.get("vendor_specific", {}),
                     "pwnagotchi_name":  getattr(agent, "name", lambda:"Unknown")(),
                     "device_fingerprint": getattr(agent, "fingerprint", lambda:"Unknown")(),
                 }
+
                 self.processed.add(key)
                 try:
                     with open(self.options["global_log_file"], "a") as f:
                         f.write(json.dumps(entry) + "\n")
                 except Exception as e:
                     logging.error(f"[TripleGeo] Failed to log: {e}")
+
                 self.send_discord_webhook(entry)
 
     def on_handshake(self, agent, filename, ap, client):
         gps_coord = self.get_gps_coord() if HAS_GPSD else None
         shortname = os.path.basename(filename).replace(".pcap", "")
         ssid = shortname.split("_", 1)[0]
+
         noise = getattr(ap, "noise", None)
         rssi  = getattr(ap, "rssi", None)
         snr   = "N/A"
         if isinstance(rssi, (int,float)) and isinstance(noise, (int,float)):
             snr = rssi - noise
+
         freq = getattr(ap, "frequency", None)
         band = "unknown"
         if isinstance(freq, (int,float)):
@@ -266,7 +302,7 @@ class TripleGeo(plugins.Plugin):
             "lon":              gps_coord[1] if gps_coord else "N/A",
             "altitude":         gps_coord[2] if gps_coord and len(gps_coord) > 2 else "N/A",
             "source":           "gpsd" if gps_coord else "none",
-            "vendor":           oui_lookup(getattr(ap, "mac", "")),
+            "vendor":           self._lookup_oui_vendor(getattr(ap, "mac", "")),
             "handshake_file":   filename,
             "supported_rates":            getattr(ap, "supported_rates", []),
             "extended_supported_rates":   getattr(ap, "extended_supported_rates", []),
@@ -274,6 +310,7 @@ class TripleGeo(plugins.Plugin):
             "pwnagotchi_name":  getattr(agent, "name", lambda:"Unknown")(),
             "device_fingerprint": getattr(agent, "fingerprint", lambda:"Unknown")(),
         }
+
         if gps_coord:
             coord_file = filename.replace(".pcap", ".triplegeo.coord.json")
             coord_data = {"coord": {"lat": gps_coord[0], "lon": gps_coord[1]}, "source": "gpsd"}
@@ -281,6 +318,7 @@ class TripleGeo(plugins.Plugin):
                 coord_data["coord"]["altitude"] = gps_coord[2]
             with open(coord_file, "w") as f:
                 json.dump(coord_data, f)
+
         self.pending.append(filename)
         self._save_pending()
         self.send_discord_webhook(entry)
@@ -290,6 +328,7 @@ class TripleGeo(plugins.Plugin):
         if not url:
             logging.error("[TripleGeo] No Discord webhook URL set in config.toml")
             return
+
         logging.info(f"[TripleGeo] Sending webhook to {url}")
         ts = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(event["timestamp"]))
 
@@ -320,6 +359,7 @@ class TripleGeo(plugins.Plugin):
             {"name":"Vendor Tags","value":vendor_str,"inline":False},
             {"name":"File","value":str(event.get("handshake_file","")),"inline":False},
         ]
+
         payload = {
             "embeds": [
                 {
@@ -329,6 +369,7 @@ class TripleGeo(plugins.Plugin):
                 }
             ]
         }
+
         try:
             r = requests.post(url, json=payload, timeout=10)
             logging.info(f"[TripleGeo] Discord response: {r.status_code} {r.text}")

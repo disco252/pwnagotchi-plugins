@@ -41,7 +41,7 @@ main.plugins.triplegeo.global_log_file = "/root/triplegeo_globalaplog.jsonl"<br>
 main.plugins.triplegeo.discord_webhook_url = "https://discord.com/api/webhooks/XXX/YYY"<br>
 
 
-You may be required to edit "etc/hosts" to include UR.IP.XX.XX discord.com for the webhook to function.
+You may be required to edit "etc/hosts" to include "UR.IP.XX.XX discord.com" for the webhook to function.
 
 
 ======================================================================================================================================================================================

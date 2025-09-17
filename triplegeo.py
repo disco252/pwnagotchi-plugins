@@ -218,58 +218,93 @@ class TripleGeo(plugins.Plugin):
                     pass  # implement WiGLE API call
         return None, None
 
-    def on_unfiltered_ap_list(self, agent, ap_list):
-        logging.info(f"AP entry keys: {ap_list.keys()}")
+    def on_unfiltered_ap_list(self, agent, data):
+        """Process unfiltered AP list from bettercap session data"""
+        if not isinstance(data, dict) or 'wifi' not in data or 'aps' not in data['wifi']:
+            return
+        
         gps_coord = self.get_gps_coord() if HAS_GPSD else None
         now = time.time()
+    
+        for ap in data['wifi']['aps']:
+        # Create unique key for this AP
+            ap_mac = ap.get('mac', '')
+            ap_ssid = ap.get('hostname', '<unknown>')
+        
+        # Process clients for this AP
+            clients = ap.get('clients', [])
+            if clients:
+                for client in clients:
+                    client_mac = client.get('mac', '')
+                    key = f"{ap_mac}|{ap_ssid}|{client_mac}"
+                    if key not in self.processed:
+                        self._process_ap_entry(ap, client_mac, gps_coord, now, agent)
+                        self.processed.add(key)
+            else:
+            # No clients, just process the AP
+                key = f"{ap_mac}|{ap_ssid}|"
+                if key not in self.processed:
+                    self._process_ap_entry(ap, "", gps_coord, now, agent)
+                    self.processed.add(key)
 
-        for ap in ap_list:
-            key = f"{ap.get('mac')}|{ap.get('hostname')}|{ap.get('client')}"
-            if key not in self.processed:
-                # SNR
-                noise = ap.get("noise")
-                rssi  = ap.get("rssi")
-                snr   = "N/A"
-                if isinstance(rssi, (int,float)) and isinstance(noise, (int,float)):
-                    snr = rssi - noise
-
-                # frequency & band
-                freq = ap.get("frequency")
-                band = "unknown"
-                if isinstance(freq, (int,float)):
-                    band = "2.4 GHz" if freq < 3000 else "5 GHz" if freq < 6000 else "6 GHz"
-
-                entry = {
-                    "timestamp":        now,
-                    "ssid":             ap.get("hostname", "<unknown>"),
-                    "bssid":            ap.get("mac", ""),
-                    "client":           ap.get("client", ""),
-                    "rssi":             rssi or "N/A",
-                    "snr":              snr,
-                    "channel":          ap.get("channel", "N/A"),
-                    "frequency":        freq or "N/A",
-                    "band":             band,
-                    "encryption":       ap.get("encryption", "N/A"),
-                    "lat":              gps_coord[0] if gps_coord else "N/A",
-                    "lon":              gps_coord[1] if gps_coord else "N/A",
-                    "altitude":         gps_coord[2] if gps_coord and len(gps_coord) > 2 else "N/A",
-                    "source":           "gpsd" if gps_coord else "none",
-                    "vendor":           self._lookup_oui_vendor(ap.get("mac", "")),
-                    "supported_rates":            ap.get("supported_rates", []),
-                    "extended_supported_rates":   ap.get("extended_supported_rates", []),
-                    "vendor_specific_tags":       ap.get("vendor_specific", {}),
-                    "pwnagotchi_name":  getattr(agent, "name", lambda:"Unknown")(),
-                    "device_fingerprint": getattr(agent, "fingerprint", lambda:"Unknown")(),
-                }
-
-                self.processed.add(key)
-                try:
-                    with open(self.options["global_log_file"], "a") as f:
-                        f.write(json.dumps(entry) + "\n")
-                except Exception as e:
-                    logging.error(f"[TripleGeo] Failed to log: {e}")
-
-                self.send_discord_webhook(entry)
+    def _process_ap_entry(self, ap, client_mac, gps_coord, now, agent):
+        """Process individual AP entry"""
+    # Extract data correctly from bettercap AP structure
+        rssi = ap.get('rssi', 'N/A')
+        channel = ap.get('channel', 'N/A')
+        encryption = ap.get('encryption', 'N/A')
+        mac = ap.get('mac', '')
+        ssid = ap.get('hostname', '<unknown>')
+    
+    # Calculate frequency from channel (approximation)
+        freq = "N/A"
+        band = "unknown"
+        if isinstance(channel, int):
+            if 1 <= channel <= 14:
+                freq = 2412 + (channel - 1) * 5
+                band = "2.4 GHz"
+            elif 36 <= channel <= 165:
+                freq = 5000 + channel * 5
+                band = "5 GHz"
+            elif channel >= 1 and channel <= 233:  # 6 GHz PSC channels
+                freq = 5955 + (channel - 1) * 5
+                band = "6 GHz"
+    
+    # SNR calculation (bettercap doesn't usually provide noise floor)
+        snr = "N/A"
+    
+        entry = {
+            "timestamp": now,
+            "ssid": ssid,
+            "bssid": mac,
+            "client": client_mac,
+            "rssi": rssi,
+            "snr": snr,
+            "channel": channel,
+            "frequency": freq,
+            "band": band,
+            "encryption": encryption,
+            "lat": gps_coord[0] if gps_coord else "N/A",
+            "lon": gps_coord[1] if gps_coord else "N/A",
+            "altitude": gps_coord[2] if gps_coord and len(gps_coord) > 2 else "N/A",
+            "source": "gpsd" if gps_coord else "none",
+            "vendor": self._lookup_oui_vendor(mac),
+            "supported_rates": [],  # Not available in bettercap data
+            "extended_supported_rates": [],  # Not available in bettercap data
+            "vendor_specific_tags": {},  # Not available in bettercap data
+            "pwnagotchi_name": getattr(agent, "name", lambda: "Unknown")(),
+            "device_fingerprint": getattr(agent, "fingerprint", lambda: "Unknown")(),
+        }
+    
+    # Log to global file
+        try:
+            with open(self.options["global_log_file"], "a") as f:
+                f.write(json.dumps(entry) + "\n")
+        except Exception as e:
+            logging.error(f"[TripleGeo] Failed to log: {e}")
+    
+    # Send to Discord
+        self.send_discord_webhook(entry)
 
     def on_handshake(self, agent, filename, ap, client):
         gps_coord = self.get_gps_coord() if HAS_GPSD else None

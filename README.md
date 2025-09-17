@@ -52,7 +52,7 @@ You may be required to edit "etc/hosts" to include "UR.IP.XX.XX discord.com" for
 
 pcapmerger.py
 
-This is a plugin that will automatically merge captured WiFi handshakes, pcap files by both SSID and BSSID, ensuring only valid handshakes from the same network are combined. The output is /handshakes/merged, so ensure /merged/ is a created directory. Ensure there is internet over bluetooth tethering.
+This is a plugin that will automatically merge captured WiFi handshakes, pcap files by both SSID and BSSID, ensuring only valid handshakes from the same network are combined. The output is /handshakes/merged, so ensure /merged/ is a created directory.
 
 Instructions:<br>
 sudo apt-get update<br>

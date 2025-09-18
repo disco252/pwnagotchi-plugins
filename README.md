@@ -13,6 +13,13 @@ sudo apt update(never upgrade)
 
 sudo wget https://standards-oui.ieee.org/oui/oui.txt -O /usr/local/share/pwnagotchi/ieee_oui.txt
 
+sudo nano /etc/apt/sources.list
+
+repplace everything with<br>deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware<br>
+deb http://security.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware  <br>
+deb http://deb.debian.org/debian bookworm-updates main contrib non-free non-free-firmware<br>
+
+
 sudo pip3 install requests
 
 sudo pip3 install gpsd-py3

@@ -17,7 +17,8 @@ sudo pip3 install requests
 
 sudo pip3 install gpsd-py3
 
-sudo apt-get install gpsd gpsd-clients<br>
+sudo apt install --no-install-recommends gpsd-clients
+
 sudo systemctl disable gpsd.socket<br>
 sudo systemctl enable gpsd.service<br>
 sudo systemctl start gpsd.service<br>

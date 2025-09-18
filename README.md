@@ -17,7 +17,7 @@ sudo nano /etc/apt/sources.list
 
 repplace everything with<br>deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware<br>
 deb http://security.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware  <br>
-deb http://deb.debian.org/debian bookworm-updates main contrib non-free non-free-firmware<br>
+deb http://deb.debian.org/debian bookworm-updates main contrib non-free non-free-firmware<br> Keys may be missing, but they can be added.
 
 
 sudo pip3 install requests

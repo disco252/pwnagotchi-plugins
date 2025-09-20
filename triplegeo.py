@@ -15,7 +15,7 @@ except ImportError:
 
 class TripleGeo(plugins.Plugin):
     __author__ = "disco252"
-    __version__ = "1.7"
+    __version__ = "1.8-proper"
     __license__ = "GPL3"
     __description__ = (
         "Advanced geolocation, AP/client mapping, and Discord notifications for Pwnagotchi. "
@@ -425,7 +425,7 @@ class TripleGeo(plugins.Plugin):
         vendor_tags = event.get("vendor_specific_tags", {})
         vendor_str = ", ".join([f"{k}: {v}" for k, v in vendor_tags.items()][:3]) if vendor_tags else "N/A"
 
-        gps_status = "🛰️ GPS" if event.get("source") == "gpsd" else "📍 No GPS"
+        gps_status = "ðŸ›°ï¸ GPS" if event.get("source") == "gpsd" else "ðŸ“ No GPS"
 
         fields = [
             {"name":"SSID","value":str(event["ssid"]),"inline":True},
@@ -464,11 +464,11 @@ class TripleGeo(plugins.Plugin):
             logging.info(f"[TripleGeo] Sending webhook to Discord...")
             r = requests.post(url, json=payload, timeout=10)
             if r.status_code == 200:
-                logging.info(f"[TripleGeo] ✅ Discord webhook sent successfully!")
+                logging.info(f"[TripleGeo] âœ… Discord webhook sent successfully!")
             else:
-                logging.warning(f"[TripleGeo] ❌ Webhook failed: {r.status_code} - {r.text[:200]}")
+                logging.warning(f"[TripleGeo] âŒ Webhook failed: {r.status_code} - {r.text[:200]}")
         except Exception as e:
-            logging.error(f"[TripleGeo] ❌ Webhook error: {e}")
+            logging.error(f"[TripleGeo] âŒ Webhook error: {e}")
 
     def _save_processed(self):
         """Save processed entries to file"""

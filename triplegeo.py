@@ -6,7 +6,6 @@ import time
 import threading
 import glob
 import pwnagotchi.plugins as plugins
-import pwnagotchi
 
 try:
     import gps
@@ -16,12 +15,12 @@ except ImportError:
 
 class TripleGeo(plugins.Plugin):
     __author__ = "disco252"
-    __version__ = "1.8-configfixed"
+    __version__ = "1.8-tomlfix"
     __license__ = "GPL3"
     __description__ = (
         "Advanced geolocation, AP/client mapping, and Discord notifications for Pwnagotchi. "
         "Uses GPS, Google, or WiGLE; posts detailed events to Discord with IEEE OUI lookup. "
-        "Works with or without GPS hardware."
+        "Works with or without GPS hardware. Fixed to read flat TOML keys properly."
     )
     __name__ = "triplegeo"
     __defaults__ = {
@@ -81,36 +80,81 @@ class TripleGeo(plugins.Plugin):
         oui = mac_addr.replace(":", "").replace("-", "").upper()[:6]
         return self.oui_db.get(oui, "Unknown")
 
+    def _read_toml_config(self):
+        """Read configuration directly from TOML file using flat keys"""
+        config_path = "/etc/pwnagotchi/config.toml"
+        config_values = {}
+
+        if not os.path.exists(config_path):
+            logging.warning(f"[TripleGeo] Config file not found: {config_path}")
+            return config_values
+
+        try:
+            # Read TOML file line by line to parse flat keys
+            with open(config_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    # Skip comments and empty lines
+                    if not line or line.startswith('#'):
+                        continue
+
+                    # Look for triplegeo config lines
+                    if line.startswith('main.plugins.triplegeo.'):
+                        try:
+                            # Parse the flat key format: key = value
+                            if '=' in line:
+                                key_part, value_part = line.split('=', 1)
+                                key = key_part.strip()
+                                value = value_part.strip()
+
+                                # Extract the config key (last part after the dots)
+                                config_key = key.split('.')[-1]
+
+                                # Parse the value based on type
+                                if value.startswith('"') and value.endswith('"'):
+                                    # String value
+                                    parsed_value = value[1:-1]  # Remove quotes
+                                elif value.lower() == 'true':
+                                    parsed_value = True
+                                elif value.lower() == 'false':
+                                    parsed_value = False
+                                elif value.startswith('[') and value.endswith(']'):
+                                    # Array value - simple parsing
+                                    array_content = value[1:-1]
+                                    if array_content.strip():
+                                        parsed_value = [item.strip().strip('"') for item in array_content.split(',')]
+                                    else:
+                                        parsed_value = []
+                                elif value.isdigit():
+                                    parsed_value = int(value)
+                                else:
+                                    parsed_value = value
+
+                                config_values[config_key] = parsed_value
+                                logging.debug(f"[TripleGeo] Parsed config {config_key} = {parsed_value}")
+                        except Exception as e:
+                            logging.warning(f"[TripleGeo] Error parsing config line '{line}': {e}")
+
+        except Exception as e:
+            logging.error(f"[TripleGeo] Error reading config file: {e}")
+
+        return config_values
+
     def on_loaded(self):
-        """Load plugin configuration from Pwnagotchi's flat TOML keys"""
+        """Load plugin configuration from flat TOML keys"""
         logging.info("[TripleGeo] Loading plugin configuration...")
 
-        # Get the global Pwnagotchi config - this is the correct way
-        try:
-            global_config = pwnagotchi.config.get()
-            logging.debug(f"[TripleGeo] Global config loaded successfully")
-        except Exception as e:
-            logging.error(f"[TripleGeo] Failed to get global config: {e}")
-            global_config = {}
+        # Read configuration from TOML file
+        toml_config = self._read_toml_config()
 
-        # Read flat TOML keys from the global config
+        # Apply configuration values
         for key, default_val in self.__defaults__.items():
-            config_key = f"main.plugins.triplegeo.{key}"
-            try:
-                # Navigate through the nested config structure
-                config_val = global_config
-                for part in config_key.split('.'):
-                    if isinstance(config_val, dict) and part in config_val:
-                        config_val = config_val[part]
-                    else:
-                        config_val = default_val
-                        break
-
-                self.options[key] = config_val
-                logging.debug(f"[TripleGeo] Config {key} = {config_val}")
-            except Exception as e:
-                logging.warning(f"[TripleGeo] Error reading config {config_key}: {e}")
+            if key in toml_config:
+                self.options[key] = toml_config[key]
+                logging.debug(f"[TripleGeo] Config {key} = {toml_config[key]}")
+            else:
                 self.options[key] = default_val
+                logging.debug(f"[TripleGeo] Config {key} = {default_val} (default)")
 
         # Log key configuration values for debugging
         logging.info(f"[TripleGeo] Plugin enabled: {self.options['enabled']}")
@@ -197,7 +241,6 @@ class TripleGeo(plugins.Plugin):
                     self.processed = set(json.load(f))
             except Exception as e:
                 logging.warning(f"[TripleGeo] load processed: {e}")
-                # Create empty file if corrupted
                 try:
                     with open(pf, "w") as f:
                         json.dump([], f)
@@ -215,7 +258,6 @@ class TripleGeo(plugins.Plugin):
                         self.pending = []
             except Exception as e:
                 logging.warning(f"[TripleGeo] load pending: {e}")
-                # Create empty file if corrupted
                 try:
                     with open(pend, "w") as f:
                         json.dump([], f)
@@ -261,7 +303,6 @@ class TripleGeo(plugins.Plugin):
                         self._gps_last = (lat, lon)
                     return self._gps_last
         except StopIteration:
-            # No GPS data available - return None silently
             logging.debug("[TripleGeo] No GPS data available")
             return None
         except Exception as e:
@@ -298,11 +339,9 @@ class TripleGeo(plugins.Plugin):
         now = time.time()
 
         for ap in data['wifi']['aps']:
-            # Create unique key for this AP
             ap_mac = ap.get('mac', '')
             ap_ssid = ap.get('hostname', '<unknown>')
 
-            # Process clients for this AP
             clients = ap.get('clients', [])
             if clients:
                 for client in clients:
@@ -312,7 +351,6 @@ class TripleGeo(plugins.Plugin):
                         self._process_ap_entry(ap, client_mac, gps_coord, now, agent)
                         self.processed.add(key)
             else:
-                # No clients, just process the AP
                 key = f"{ap_mac}|{ap_ssid}|"
                 if key not in self.processed:
                     self._process_ap_entry(ap, "", gps_coord, now, agent)
@@ -320,14 +358,12 @@ class TripleGeo(plugins.Plugin):
 
     def _process_ap_entry(self, ap, client_mac, gps_coord, now, agent):
         """Process individual AP entry"""
-        # Extract data correctly from bettercap AP structure
         rssi = ap.get('rssi', 'N/A')
         channel = ap.get('channel', 'N/A')
         encryption = ap.get('encryption', 'N/A')
         mac = ap.get('mac', '')
         ssid = ap.get('hostname', '<unknown>')
 
-        # Calculate frequency from channel (approximation)
         freq = "N/A"
         band = "unknown"
         if isinstance(channel, int):
@@ -337,12 +373,9 @@ class TripleGeo(plugins.Plugin):
             elif 36 <= channel <= 165:
                 freq = 5000 + channel * 5
                 band = "5 GHz"
-            elif channel >= 1 and channel <= 233:  # 6 GHz PSC channels
+            elif channel >= 1 and channel <= 233:
                 freq = 5955 + (channel - 1) * 5
                 band = "6 GHz"
-
-        # SNR calculation (bettercap doesn't usually provide noise floor)
-        snr = "N/A"
 
         entry = {
             "timestamp": now,
@@ -350,7 +383,7 @@ class TripleGeo(plugins.Plugin):
             "bssid": mac,
             "client": client_mac,
             "rssi": rssi,
-            "snr": snr,
+            "snr": "N/A",
             "channel": channel,
             "frequency": freq,
             "band": band,
@@ -360,21 +393,19 @@ class TripleGeo(plugins.Plugin):
             "altitude": gps_coord[2] if gps_coord and len(gps_coord) > 2 else "N/A",
             "source": "gpsd" if gps_coord else "none",
             "vendor": self._lookup_oui_vendor(mac),
-            "supported_rates": [],  # Not available in bettercap data
-            "extended_supported_rates": [],  # Not available in bettercap data
-            "vendor_specific_tags": {},  # Not available in bettercap data
+            "supported_rates": [],
+            "extended_supported_rates": [],
+            "vendor_specific_tags": {},
             "pwnagotchi_name": getattr(agent, "name", lambda: "Unknown")(),
             "device_fingerprint": getattr(agent, "fingerprint", lambda: "Unknown")(),
         }
 
-        # Log to global file
         try:
             with open(self.options["global_log_file"], "a") as f:
                 f.write(json.dumps(entry) + "\n")
         except Exception as e:
             logging.error(f"[TripleGeo] Failed to log: {e}")
 
-        # Send to Discord - works with or without GPS
         self.send_discord_webhook(entry)
 
     def on_handshake(self, agent, filename, ap, client):
@@ -423,7 +454,6 @@ class TripleGeo(plugins.Plugin):
             "device_fingerprint": getattr(agent, "fingerprint", lambda:"Unknown")(),
         }
 
-        # Save GPS coordinates if available
         if gps_coord:
             coord_file = filename.replace(".pcap", ".triplegeo.coord.json")
             coord_data = {"coord": {"lat": gps_coord[0], "lon": gps_coord[1]}, "source": "gpsd"}
@@ -438,7 +468,6 @@ class TripleGeo(plugins.Plugin):
         self.pending.append(filename)
         self._save_pending()
 
-        # THIS IS THE MAIN WEBHOOK TRIGGER - Send webhook regardless of GPS availability
         logging.info(f"[TripleGeo] Triggering Discord webhook for handshake: {ssid}")
         self.send_discord_webhook(entry, title=":handshake: New Handshake Captured")
 
@@ -460,7 +489,6 @@ class TripleGeo(plugins.Plugin):
         vendor_tags = event.get("vendor_specific_tags", {})
         vendor_str = ", ".join([f"{k}: {v}" for k, v in vendor_tags.items()][:3]) if vendor_tags else "N/A"
 
-        # GPS status indicator
         gps_status = "ðŸ›°ï¸ GPS" if event.get("source") == "gpsd" else "ðŸ“ No GPS"
 
         fields = [
@@ -483,8 +511,7 @@ class TripleGeo(plugins.Plugin):
             {"name":"File","value":str(event.get("handshake_file","")),"inline":False},
         ]
 
-        # Color coding based on GPS availability
-        color = 0x00ff00 if event.get("source") == "gpsd" else 0xff6600  # Green for GPS, Orange for no GPS
+        color = 0x00ff00 if event.get("source") == "gpsd" else 0xff6600
 
         payload = {
             "embeds": [

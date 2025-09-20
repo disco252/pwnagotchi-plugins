@@ -15,7 +15,7 @@ except ImportError:
 
 class TripleGeo(plugins.Plugin):
     __author__ = "disco252"
-    __version__ = "1.7-flatkeys"
+    __version__ = "1.7"
     __license__ = "GPL3"
     __description__ = (
         "Advanced geolocation, AP/client mapping, and Discord notifications for Pwnagotchi. "

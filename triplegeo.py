@@ -20,7 +20,7 @@ class TripleGeo(plugins.Plugin):
     __description__ = (
         "Advanced geolocation, AP/client mapping, and Discord notifications for Pwnagotchi. "
         "Uses GPS, Google, or WiGLE; posts detailed events to Discord with IEEE OUI lookup. "
-        "Works with or without GPS hardware. Fixed to read flat TOML keys properly."
+        "Works with or without GPS hardware. Properly reads from config.toml flat keys."
     )
     __name__ = "triplegeo"
     __defaults__ = {
@@ -80,81 +80,17 @@ class TripleGeo(plugins.Plugin):
         oui = mac_addr.replace(":", "").replace("-", "").upper()[:6]
         return self.oui_db.get(oui, "Unknown")
 
-    def _read_toml_config(self):
-        """Read configuration directly from TOML file using flat keys"""
-        config_path = "/etc/pwnagotchi/config.toml"
-        config_values = {}
-
-        if not os.path.exists(config_path):
-            logging.warning(f"[TripleGeo] Config file not found: {config_path}")
-            return config_values
-
-        try:
-            # Read TOML file line by line to parse flat keys
-            with open(config_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    # Skip comments and empty lines
-                    if not line or line.startswith('#'):
-                        continue
-
-                    # Look for triplegeo config lines
-                    if line.startswith('main.plugins.triplegeo.'):
-                        try:
-                            # Parse the flat key format: key = value
-                            if '=' in line:
-                                key_part, value_part = line.split('=', 1)
-                                key = key_part.strip()
-                                value = value_part.strip()
-
-                                # Extract the config key (last part after the dots)
-                                config_key = key.split('.')[-1]
-
-                                # Parse the value based on type
-                                if value.startswith('"') and value.endswith('"'):
-                                    # String value
-                                    parsed_value = value[1:-1]  # Remove quotes
-                                elif value.lower() == 'true':
-                                    parsed_value = True
-                                elif value.lower() == 'false':
-                                    parsed_value = False
-                                elif value.startswith('[') and value.endswith(']'):
-                                    # Array value - simple parsing
-                                    array_content = value[1:-1]
-                                    if array_content.strip():
-                                        parsed_value = [item.strip().strip('"') for item in array_content.split(',')]
-                                    else:
-                                        parsed_value = []
-                                elif value.isdigit():
-                                    parsed_value = int(value)
-                                else:
-                                    parsed_value = value
-
-                                config_values[config_key] = parsed_value
-                                logging.debug(f"[TripleGeo] Parsed config {config_key} = {parsed_value}")
-                        except Exception as e:
-                            logging.warning(f"[TripleGeo] Error parsing config line '{line}': {e}")
-
-        except Exception as e:
-            logging.error(f"[TripleGeo] Error reading config file: {e}")
-
-        return config_values
-
     def on_loaded(self):
-        """Load plugin configuration from flat TOML keys"""
+        """Load plugin configuration using Pwnagotchi's standard method"""
         logging.info("[TripleGeo] Loading plugin configuration...")
 
-        # Read configuration from TOML file
-        toml_config = self._read_toml_config()
+        # This is the standard way Pwnagotchi plugins read configuration
+        # The framework automatically reads main.plugins.triplegeo.* keys
 
-        # Apply configuration values
+        # Set default values first
         for key, default_val in self.__defaults__.items():
-            if key in toml_config:
-                self.options[key] = toml_config[key]
-                logging.debug(f"[TripleGeo] Config {key} = {toml_config[key]}")
-            else:
-                self.options[key] = default_val
-                logging.debug(f"[TripleGeo] Config {key} = {default_val} (default)")
+            self.options[key] = self.config.get(key, default_val)
+            logging.debug(f"[TripleGeo] Config {key} = {self.options[key]}")
 
         # Log key configuration values for debugging
         logging.info(f"[TripleGeo] Plugin enabled: {self.options['enabled']}")
@@ -489,7 +425,7 @@ class TripleGeo(plugins.Plugin):
         vendor_tags = event.get("vendor_specific_tags", {})
         vendor_str = ", ".join([f"{k}: {v}" for k, v in vendor_tags.items()][:3]) if vendor_tags else "N/A"
 
-        gps_status = "ðŸ›°ï¸ GPS" if event.get("source") == "gpsd" else "ðŸ“ No GPS"
+        gps_status = "🛰️ GPS" if event.get("source") == "gpsd" else "📍 No GPS"
 
         fields = [
             {"name":"SSID","value":str(event["ssid"]),"inline":True},
@@ -528,11 +464,11 @@ class TripleGeo(plugins.Plugin):
             logging.info(f"[TripleGeo] Sending webhook to Discord...")
             r = requests.post(url, json=payload, timeout=10)
             if r.status_code == 200:
-                logging.info(f"[TripleGeo] âœ… Discord webhook sent successfully!")
+                logging.info(f"[TripleGeo] ✅ Discord webhook sent successfully!")
             else:
-                logging.warning(f"[TripleGeo] âŒ Webhook failed: {r.status_code} - {r.text[:200]}")
+                logging.warning(f"[TripleGeo] ❌ Webhook failed: {r.status_code} - {r.text[:200]}")
         except Exception as e:
-            logging.error(f"[TripleGeo] âŒ Webhook error: {e}")
+            logging.error(f"[TripleGeo] ❌ Webhook error: {e}")
 
     def _save_processed(self):
         """Save processed entries to file"""

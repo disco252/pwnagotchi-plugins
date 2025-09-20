@@ -6,6 +6,7 @@ import time
 import threading
 import glob
 import pwnagotchi.plugins as plugins
+import pwnagotchi
 
 try:
     import gps
@@ -15,12 +16,12 @@ except ImportError:
 
 class TripleGeo(plugins.Plugin):
     __author__ = "disco252"
-    __version__ = "1.7"
+    __version__ = "1.8-configfixed"
     __license__ = "GPL3"
     __description__ = (
         "Advanced geolocation, AP/client mapping, and Discord notifications for Pwnagotchi. "
         "Uses GPS, Google, or WiGLE; posts detailed events to Discord with IEEE OUI lookup. "
-        "Works with or without GPS hardware. Fixed for flat TOML keys."
+        "Works with or without GPS hardware. FIXED config loading for flat TOML keys."
     )
     __name__ = "triplegeo"
     __defaults__ = {
@@ -81,16 +82,30 @@ class TripleGeo(plugins.Plugin):
         return self.oui_db.get(oui, "Unknown")
 
     def on_loaded(self):
-        """Load plugin configuration from flat TOML keys"""
+        """Load plugin configuration from Pwnagotchi's flat TOML keys"""
         logging.info("[TripleGeo] Loading plugin configuration...")
 
-        # Read flat TOML keys using the standard plugin configuration approach
-        # These correspond to: main.plugins.triplegeo.key = value
+        # Get the global Pwnagotchi config - this is the correct way
+        try:
+            global_config = pwnagotchi.config.get()
+            logging.debug(f"[TripleGeo] Global config loaded successfully")
+        except Exception as e:
+            logging.error(f"[TripleGeo] Failed to get global config: {e}")
+            global_config = {}
+
+        # Read flat TOML keys from the global config
         for key, default_val in self.__defaults__.items():
             config_key = f"main.plugins.triplegeo.{key}"
             try:
-                # Get value from config, fallback to default
-                config_val = self.config.get(config_key, default_val)
+                # Navigate through the nested config structure
+                config_val = global_config
+                for part in config_key.split('.'):
+                    if isinstance(config_val, dict) and part in config_val:
+                        config_val = config_val[part]
+                    else:
+                        config_val = default_val
+                        break
+
                 self.options[key] = config_val
                 logging.debug(f"[TripleGeo] Config {key} = {config_val}")
             except Exception as e:
@@ -99,7 +114,10 @@ class TripleGeo(plugins.Plugin):
 
         # Log key configuration values for debugging
         logging.info(f"[TripleGeo] Plugin enabled: {self.options['enabled']}")
-        logging.info(f"[TripleGeo] Discord webhook configured: {'Yes' if self.options['discord_webhook_url'] else 'No'}")
+        webhook_url = self.options.get('discord_webhook_url', '')
+        logging.info(f"[TripleGeo] Discord webhook configured: {'Yes' if webhook_url else 'No'}")
+        if webhook_url:
+            logging.info(f"[TripleGeo] Webhook URL: {webhook_url[:50]}...")
         logging.info(f"[TripleGeo] Mode: {self.options['mode']}")
 
         # Load OUI database
@@ -443,7 +461,7 @@ class TripleGeo(plugins.Plugin):
         vendor_str = ", ".join([f"{k}: {v}" for k, v in vendor_tags.items()][:3]) if vendor_tags else "N/A"
 
         # GPS status indicator
-        gps_status = "🛰️ GPS" if event.get("source") == "gpsd" else "📍 No GPS"
+        gps_status = "ðŸ›°ï¸ GPS" if event.get("source") == "gpsd" else "ðŸ“ No GPS"
 
         fields = [
             {"name":"SSID","value":str(event["ssid"]),"inline":True},
@@ -483,11 +501,11 @@ class TripleGeo(plugins.Plugin):
             logging.info(f"[TripleGeo] Sending webhook to Discord...")
             r = requests.post(url, json=payload, timeout=10)
             if r.status_code == 200:
-                logging.info(f"[TripleGeo] ✅ Discord webhook sent successfully!")
+                logging.info(f"[TripleGeo] âœ… Discord webhook sent successfully!")
             else:
-                logging.warning(f"[TripleGeo] ❌ Webhook failed: {r.status_code} - {r.text[:200]}")
+                logging.warning(f"[TripleGeo] âŒ Webhook failed: {r.status_code} - {r.text[:200]}")
         except Exception as e:
-            logging.error(f"[TripleGeo] ❌ Webhook error: {e}")
+            logging.error(f"[TripleGeo] âŒ Webhook error: {e}")
 
     def _save_processed(self):
         """Save processed entries to file"""

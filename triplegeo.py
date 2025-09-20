@@ -21,7 +21,7 @@ class TripleGeo(plugins.Plugin):
     __description__ = (
         "Advanced geolocation, AP/client mapping, and Discord notifications for Pwnagotchi. "
         "Uses GPS, Google, or WiGLE; posts detailed events to Discord with IEEE OUI lookup. "
-        "Works with or without GPS hardware. FIXED config loading for flat TOML keys."
+        "Works with or without GPS hardware."
     )
     __name__ = "triplegeo"
     __defaults__ = {

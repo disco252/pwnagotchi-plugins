@@ -60,11 +60,11 @@ except ImportError:
 
 class TripleGeo(plugins.Plugin):
     __author__ = "disco252"
-    __version__ = "2.3-discord-fixed"
+    __version__ = "1.8.2"
     __license__ = "GPL3"
     __description__ = (
         "Geolocation and Discord notifications for Pwnagotchi. "
-        "Posts events to Discord using validated JSON webhook requests. Compatible with Jayofelony image."
+        "Posts events to Discord using validated JSON webhook requests."
     )
     __name__ = "triplegeo"
     __defaults__ = {

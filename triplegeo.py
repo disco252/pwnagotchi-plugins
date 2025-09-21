@@ -16,12 +16,12 @@ except ImportError:
 
 class TripleGeo(plugins.Plugin):
     __author__ = "disco252"
-    __version__ = "1.8.1"
+    __version__ = "2.0-final"
     __license__ = "GPL3"
     __description__ = (
         "Advanced geolocation, AP/client mapping, and Discord notifications for Pwnagotchi. "
         "Uses GPS, Google, or WiGLE; posts detailed events to Discord with IEEE OUI lookup. "
-        "AP data caching, proper BSSID extraction"
+        "FINAL VERSION with proper config access, AP data caching, and BSSID extraction."
     )
     __name__ = "triplegeo"
     __defaults__ = {
@@ -88,21 +88,79 @@ class TripleGeo(plugins.Plugin):
         return self.oui_db.get(oui, "Unknown")
 
     def on_loaded(self):
-        """Load plugin configuration using Pwnagotchi's standard method"""
+        """Load plugin configuration - FIXED CONFIG ACCESS"""
         logging.info("[TripleGeo] Loading plugin configuration...")
 
+        # Multiple methods to access configuration - bulletproof approach
+        config_loaded = False
+
         try:
-            # Read flat TOML keys using Pwnagotchi's config system
-            for key, default_val in self.__defaults__.items():
-                self.options[key] = self.config.get(key, default_val)
-                if self.options.get('debug_logging', False):
-                    logging.debug(f"[TripleGeo] Config {key} = {self.options[key]}")
-        except AttributeError as e:
-            logging.error(f"[TripleGeo] Config access failed: {e}")
-            # Fallback to defaults
+            # Method 1: Standard Pwnagotchi plugin config access
+            if hasattr(self, 'config') and self.config is not None:
+                for key, default_val in self.__defaults__.items():
+                    self.options[key] = self.config.get(key, default_val)
+                config_loaded = True
+                logging.info("[TripleGeo] Config loaded via self.config")
+        except Exception as e:
+            logging.warning(f"[TripleGeo] Method 1 config access failed: {e}")
+
+        if not config_loaded:
+            try:
+                # Method 2: Direct import and access
+                import pwnagotchi
+                if hasattr(pwnagotchi, 'config') and hasattr(pwnagotchi.config, 'config'):
+                    cfg = pwnagotchi.config.config
+                    plugin_config = cfg.get('main', {}).get('plugins', {}).get('triplegeo', {})
+                    for key, default_val in self.__defaults__.items():
+                        self.options[key] = plugin_config.get(key, default_val)
+                    config_loaded = True
+                    logging.info("[TripleGeo] Config loaded via pwnagotchi.config")
+            except Exception as e:
+                logging.warning(f"[TripleGeo] Method 2 config access failed: {e}")
+
+        if not config_loaded:
+            try:
+                # Method 3: Global config access
+                import pwnagotchi.config as cfg_module
+                if hasattr(cfg_module, 'config') and cfg_module.config:
+                    plugin_config = cfg_module.config.get('main', {}).get('plugins', {}).get('triplegeo', {})
+                    for key, default_val in self.__defaults__.items():
+                        self.options[key] = plugin_config.get(key, default_val)
+                    config_loaded = True
+                    logging.info("[TripleGeo] Config loaded via global config module")
+            except Exception as e:
+                logging.warning(f"[TripleGeo] Method 3 config access failed: {e}")
+
+        if not config_loaded:
+            try:
+                # Method 4: Plugin manager config access
+                if hasattr(plugins, '_plugins_config') and plugins._plugins_config:
+                    plugin_config = plugins._plugins_config.get('triplegeo', {})
+                    for key, default_val in self.__defaults__.items():
+                        self.options[key] = plugin_config.get(key, default_val)
+                    config_loaded = True
+                    logging.info("[TripleGeo] Config loaded via plugin manager")
+            except Exception as e:
+                logging.warning(f"[TripleGeo] Method 4 config access failed: {e}")
+
+        # Fallback to environment variables and defaults
+        if not config_loaded:
+            logging.warning("[TripleGeo] All config methods failed, using environment variables and defaults")
             self.options = dict(self.__defaults__)
 
-        # Log key configuration values for debugging
+            # Try to get critical settings from environment
+            env_webhook = os.environ.get('TRIPLEGEO_DISCORD_WEBHOOK_URL', '')
+            env_enabled = os.environ.get('TRIPLEGEO_ENABLED', 'false').lower() == 'true'
+
+            if env_webhook:
+                self.options['discord_webhook_url'] = env_webhook
+                self.options['enabled'] = True
+                logging.info("[TripleGeo] Using Discord webhook from environment variable")
+            elif env_enabled:
+                self.options['enabled'] = True
+                logging.info("[TripleGeo] Plugin enabled via environment variable")
+
+        # Log configuration status
         logging.info(f"[TripleGeo] Plugin enabled: {self.options['enabled']}")
         webhook_url = self.options.get('discord_webhook_url', '')
         logging.info(f"[TripleGeo] Discord webhook configured: {'Yes' if webhook_url else 'No'}")
@@ -110,16 +168,23 @@ class TripleGeo(plugins.Plugin):
             logging.info(f"[TripleGeo] Webhook URL: {webhook_url[:50]}...")
         logging.info(f"[TripleGeo] Mode: {self.options['mode']}")
 
+        if self.options.get('debug_logging', False):
+            for key, val in self.options.items():
+                if 'webhook' not in key.lower():  # Don't log webhook URL
+                    logging.debug(f"[TripleGeo] Config {key} = {val}")
+
         # Load OUI database
         self.oui_db = self._load_oui_db(self.options["oui_db_path"])
 
+        # Initialize components
         self._load_storage()
         self._connect_gpsd()
+
         logging.info(f"[TripleGeo] Plugin loaded successfully with {len(self.oui_db)} OUIs.")
         self._report_existing_coords()
 
     def _extract_info_from_filename(self, filename):
-        """Extract AP info from handshake filename patterns - FIXED VERSION"""
+        """Extract AP info from handshake filename patterns"""
         shortname = os.path.basename(filename).replace(".pcap", "")
 
         if self.options.get('debug_logging', False):
@@ -127,7 +192,7 @@ class TripleGeo(plugins.Plugin):
 
         # Pwnagotchi format examples:
         # "SSID_BSSID_HASH.pcap" -> ["SSID", "BSSID", "HASH"] 
-        # "NETGEAR03_a004601234ab_hash123.pcap"
+        # "PMT_a49733bc3af1_2025-09-20T04-00-02-265.pcap"
         parts = shortname.split("_")
         ssid = parts[0] if parts else shortname
 
@@ -288,8 +353,9 @@ class TripleGeo(plugins.Plugin):
             logging.error(f"[TripleGeo] Failed to log: {e}")
 
     def on_handshake(self, agent, filename, ap, client):
-        """Process handshake captures - COMPLETELY FIXED VERSION"""
+        """Process handshake captures - FINAL VERSION"""
         if not self.options.get("enabled", False):
+            logging.info("[TripleGeo] Plugin disabled, skipping handshake processing")
             return
 
         logging.info(f"[TripleGeo] Processing handshake: {filename}")
@@ -329,11 +395,11 @@ class TripleGeo(plugins.Plugin):
                 with self.ap_cache_lock:
                     cached_ap = self.ap_cache.get(ap_mac, {})
                     if cached_ap:
-                        logging.info(f"[TripleGeo] Found cached data for {ap_mac}")
+                        logging.info(f"[TripleGeo] ✅ Found cached data for {ap_mac}")
                         if self.options.get('debug_logging', False):
                             logging.debug(f"[TripleGeo] Cached data: {cached_ap}")
                     else:
-                        logging.warning(f"[TripleGeo] No cached data for {ap_mac}")
+                        logging.warning(f"[TripleGeo] ❌ No cached data for {ap_mac}")
                         if self.options.get('debug_logging', False):
                             cached_macs = list(self.ap_cache.keys())[:5]  # Show first 5
                             logging.debug(f"[TripleGeo] Available cached MACs: {cached_macs}")
@@ -497,7 +563,7 @@ class TripleGeo(plugins.Plugin):
             logging.error(f"[TripleGeo] Webhook error: {e}")
 
     def _report_existing_coords(self):
-        """Report existing coordinate files - FIXED"""
+        """Report existing coordinate files"""
         webhook_url = self.options.get('discord_webhook_url', '')
         if not webhook_url:
             logging.info("[TripleGeo] No Discord webhook URL configured for coord reporting")
@@ -522,7 +588,7 @@ class TripleGeo(plugins.Plugin):
         logging.info(f"[TripleGeo] Found {len(files)} existing coord.json files.")
 
     def _load_storage(self):
-        """Load processed handshakes and pending files - COMPLETELY FIXED"""
+        """Load processed handshakes and pending files"""
         # Load processed file
         pf = self.options["processed_file"]
         self.processed = set()
@@ -560,7 +626,7 @@ class TripleGeo(plugins.Plugin):
                     pass
 
     def _save_pending(self):
-        """Save pending handshakes - FIXED"""
+        """Save pending handshakes"""
         try:
             with open(self.options["pending_file"], "w") as f:
                 json.dump(self.pending, f)
@@ -568,7 +634,7 @@ class TripleGeo(plugins.Plugin):
             logging.warning(f"[TripleGeo] Error saving pending: {e}")
 
     def _connect_gpsd(self):
-        """Connect to GPS daemon - COMPLETE IMPLEMENTATION"""
+        """Connect to GPS daemon"""
         if not HAS_GPSD:
             logging.warning("[TripleGeo] gpsd-py3 module not found; GPS disabled.")
             return
@@ -583,7 +649,7 @@ class TripleGeo(plugins.Plugin):
             logging.warning(f"[TripleGeo] Could not connect to gpsd: {e}")
 
     def get_gps_coord(self, max_attempts=10):
-        """Get GPS coordinates with proper error handling - COMPLETE IMPLEMENTATION"""
+        """Get GPS coordinates with proper error handling"""
         if not self.gps_session:
             return self._gps_last
 
@@ -629,7 +695,7 @@ class TripleGeo(plugins.Plugin):
         return None, None
 
     def _save_processed(self):
-        """Save processed entries to file - FIXED"""
+        """Save processed entries to file"""
         try:
             with open(self.options["processed_file"], "w") as f:
                 json.dump(list(self.processed), f)
@@ -637,7 +703,7 @@ class TripleGeo(plugins.Plugin):
             logging.warning(f"[TripleGeo] Error saving processed: {e}")
 
     def on_unload(self, ui):
-        """Clean up when plugin unloads - COMPLETELY FIXED"""
+        """Clean up when plugin unloads"""
         try:
             self._save_processed()
             self._save_pending()

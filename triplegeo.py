@@ -499,7 +499,7 @@ class TripleGeo(plugins.Plugin):
         vendor_tags = event.get("vendor_specific_tags", {})
         vendor_str = ", ".join([f"{k}: {v}" for k, v in vendor_tags.items()][:3]) if vendor_tags else "N/A"
 
-        gps_status = "ðŸ›°ï¸ GPS" if event.get("source") == "gpsd" else "No GPS"
+        gps_status = "GPS" if event.get("source") == "gpsd" else "No GPS"
 
         fields = [
             {"name":"SSID","value":str(event["ssid"]),"inline":True},

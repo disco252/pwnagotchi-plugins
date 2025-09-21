@@ -1,5 +1,3 @@
-
-
 triplegeo.py 
 
 This a plugin that determines geolocation of captured WiFi handshakes.
@@ -11,18 +9,21 @@ This also uploads scan data to WiGLE for mapping.
 
 sudo apt update(never upgrade)
 
-sudo wget https://standards-oui.ieee.org/oui/oui.txt -O /usr/local/share/pwnagotchi/ieee_oui.txt
+- # 1. Install to custom plugins directory
+sudo wget https://raw.githubusercontent.com/YOUR_REPO/triplegeo.py \
+  -O /usr/local/share/pwnagotchi/custom-plugins/triplegeo.py
 
-sudo pip3 install requests
-
+- # 2. Install GPS support (optional)
+sudo apt update
+sudo apt install gpsd gpsd-clients
 sudo pip3 install gpsd-py3
 
-sudo apt install --no-install-recommends gpsd-clients
+- # 3. Download OUI database (optional)
+sudo wget http://standards-oui.ieee.org/oui/oui.txt \
+  -O /usr/local/share/pwnagotchi/ieee_oui.txt
 
-sudo systemctl disable gpsd.socket<br>
-sudo systemctl enable gpsd.service<br>
-sudo systemctl start gpsd.service<br>
-
+- # 4. Restart Pwnagotchi
+sudo systemctl restart pwnagotchi
 Ensure GPS is connected, then point GPSD at the device using:<br>
 sudo gpsd /dev/ttyUSB0 -F /var/run/gpsd.sock
 

@@ -9,20 +9,20 @@ This also uploads scan data to WiGLE for mapping.
 
 sudo apt update(never upgrade)
 
-- # 1. Install to custom plugins directory
+# 1. Install to custom plugins directory
 sudo wget https://raw.githubusercontent.com/YOUR_REPO/triplegeo.py \
   -O /usr/local/share/pwnagotchi/custom-plugins/triplegeo.py
 
-- # 2. Install GPS support (optional)
+# 2. Install GPS support (optional)
 sudo apt update
 sudo apt install gpsd gpsd-clients
 sudo pip3 install gpsd-py3
 
-- # 3. Download OUI database (optional)
+# 3. Download OUI database (optional)
 sudo wget http://standards-oui.ieee.org/oui/oui.txt \
   -O /usr/local/share/pwnagotchi/ieee_oui.txt
 
-- # 4. Restart Pwnagotchi
+# 4. Restart Pwnagotchi
 sudo systemctl restart pwnagotchi
 Ensure GPS is connected, then point GPSD at the device using:<br>
 sudo gpsd /dev/ttyUSB0 -F /var/run/gpsd.sock

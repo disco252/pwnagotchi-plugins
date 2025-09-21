@@ -21,7 +21,7 @@ class TripleGeo(plugins.Plugin):
     __description__ = (
         "Advanced geolocation, AP/client mapping, and Discord notifications for Pwnagotchi. "
         "Uses GPS, Google, or WiGLE; posts detailed events to Discord with IEEE OUI lookup. "
-        "AP data caching and handshake data extraction."
+        "AP data caching, proper BSSID extraction"
     )
     __name__ = "triplegeo"
     __defaults__ = {
@@ -40,6 +40,7 @@ class TripleGeo(plugins.Plugin):
         "discord_webhook_url": "",
         "oui_db_path":         "/usr/local/share/pwnagotchi/ieee_oui.txt",
         "cache_expire_minutes": 30,  # How long to keep AP cache
+        "debug_logging":       False,  # Enhanced debug logging
     }
 
     def __init__(self):
@@ -94,7 +95,8 @@ class TripleGeo(plugins.Plugin):
             # Read flat TOML keys using Pwnagotchi's config system
             for key, default_val in self.__defaults__.items():
                 self.options[key] = self.config.get(key, default_val)
-                logging.debug(f"[TripleGeo] Config {key} = {self.options[key]}")
+                if self.options.get('debug_logging', False):
+                    logging.debug(f"[TripleGeo] Config {key} = {self.options[key]}")
         except AttributeError as e:
             logging.error(f"[TripleGeo] Config access failed: {e}")
             # Fallback to defaults
@@ -117,16 +119,31 @@ class TripleGeo(plugins.Plugin):
         self._report_existing_coords()
 
     def _extract_info_from_filename(self, filename):
-        """Extract AP info from handshake filename patterns"""
-        # Pwnagotchi filenames: "SSID_BSSID.pcap" or "SSID_BSSID_HASH.pcap"
+        """Extract AP info from handshake filename patterns - FIXED VERSION"""
         shortname = os.path.basename(filename).replace(".pcap", "")
 
-        # Try to extract BSSID from filename
-        bssid_pattern = r'([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}'
-        bssid_match = re.search(bssid_pattern, shortname)
+        if self.options.get('debug_logging', False):
+            logging.debug(f"[TripleGeo] Extracting from filename: {shortname}")
 
-        ssid = shortname.split("_")[0] if "_" in shortname else shortname
-        bssid = bssid_match.group(0) if bssid_match else None
+        # Pwnagotchi format examples:
+        # "SSID_BSSID_HASH.pcap" -> ["SSID", "BSSID", "HASH"] 
+        # "NETGEAR03_a004601234ab_hash123.pcap"
+        parts = shortname.split("_")
+        ssid = parts[0] if parts else shortname
+
+        # Look for MAC-like pattern in parts (12 hex chars = MAC without separators)
+        bssid = None
+        for part in parts[1:]:  # Skip SSID part
+            if re.match(r'^[0-9a-fA-F]{12}$', part):  # 12 hex chars
+                # Convert to standard MAC format: ab1234567890 -> ab:12:34:56:78:90
+                bssid = ':'.join([part[i:i+2] for i in range(0, 12, 2)])
+                break
+            elif re.match(r'^[0-9a-fA-F]{2}([:-][0-9a-fA-F]{2}){5}$', part):  # Already formatted
+                bssid = part
+                break
+
+        if self.options.get('debug_logging', False):
+            logging.debug(f"[TripleGeo] Extracted SSID: {ssid}, BSSID: {bssid}")
 
         return ssid, bssid
 
@@ -163,6 +180,7 @@ class TripleGeo(plugins.Plugin):
         if now % 300 < 1:  # Every ~5 minutes
             self._cleanup_ap_cache()
 
+        cached_count = 0
         with self.ap_cache_lock:
             for ap in data['wifi']['aps']:
                 ap_mac = ap.get('mac', '')
@@ -181,6 +199,7 @@ class TripleGeo(plugins.Plugin):
                     'timestamp': now,
                     'gps_coord': gps_coord
                 }
+                cached_count += 1
 
                 # Process for immediate webhook (optional)
                 ap_ssid = ap.get('hostname', '<unknown>')
@@ -198,6 +217,9 @@ class TripleGeo(plugins.Plugin):
                     if key not in self.processed:
                         self._process_ap_entry(ap, "", gps_coord, now, agent)
                         self.processed.add(key)
+
+        if self.options.get('debug_logging', False) and cached_count > 0:
+            logging.debug(f"[TripleGeo] Cached {cached_count} APs, total cache size: {len(self.ap_cache)}")
 
     def _calculate_frequency(self, channel):
         """Calculate frequency from channel number"""
@@ -266,64 +288,103 @@ class TripleGeo(plugins.Plugin):
             logging.error(f"[TripleGeo] Failed to log: {e}")
 
     def on_handshake(self, agent, filename, ap, client):
-        """Process handshake captures - FIXED VERSION with AP cache lookup"""
+        """Process handshake captures - COMPLETELY FIXED VERSION"""
         if not self.options.get("enabled", False):
             return
 
         logging.info(f"[TripleGeo] Processing handshake: {filename}")
 
+        # Enhanced debug logging
+        if self.options.get('debug_logging', False):
+            logging.debug(f"[TripleGeo] Cache size: {len(self.ap_cache)}")
+            logging.debug(f"[TripleGeo] AP object type: {type(ap)}")
+            if hasattr(ap, '__dict__'):
+                logging.debug(f"[TripleGeo] AP attributes: {list(vars(ap).keys())}")
+
         gps_coord = self.get_gps_coord() if HAS_GPSD else None
         ssid, bssid = self._extract_info_from_filename(filename)
 
-        # Try to get BSSID from multiple sources
+        # Try to get BSSID from multiple sources with better error handling
         ap_mac = None
-        if hasattr(ap, 'mac'):
-            ap_mac = ap.mac
-        elif hasattr(ap, 'bssid'):  
-            ap_mac = ap.bssid
-        elif isinstance(ap, dict):
-            ap_mac = ap.get('mac') or ap.get('bssid')
-        elif bssid:  # From filename extraction
+        try:
+            if hasattr(ap, 'mac') and ap.mac:
+                ap_mac = ap.mac
+            elif hasattr(ap, 'bssid') and ap.bssid:
+                ap_mac = ap.bssid
+            elif isinstance(ap, dict):
+                ap_mac = ap.get('mac') or ap.get('bssid')
+        except Exception as e:
+            logging.warning(f"[TripleGeo] Error extracting MAC from AP object: {e}")
+
+        # Fallback to filename extraction
+        if not ap_mac and bssid:
             ap_mac = bssid
 
-        logging.debug(f"[TripleGeo] Handshake AP MAC: {ap_mac}, SSID: {ssid}")
+        logging.info(f"[TripleGeo] Handshake AP MAC: {ap_mac}, SSID: {ssid}")
 
-        # Look up cached AP data
+        # Look up cached AP data with better error handling
         cached_ap = {}
         if ap_mac:
-            with self.ap_cache_lock:
-                cached_ap = self.ap_cache.get(ap_mac, {})
-                if cached_ap:
-                    logging.info(f"[TripleGeo] Found cached data for {ap_mac}")
-                else:
-                    logging.warning(f"[TripleGeo] No cached data for {ap_mac}")
+            try:
+                with self.ap_cache_lock:
+                    cached_ap = self.ap_cache.get(ap_mac, {})
+                    if cached_ap:
+                        logging.info(f"[TripleGeo] Found cached data for {ap_mac}")
+                        if self.options.get('debug_logging', False):
+                            logging.debug(f"[TripleGeo] Cached data: {cached_ap}")
+                    else:
+                        logging.warning(f"[TripleGeo] No cached data for {ap_mac}")
+                        if self.options.get('debug_logging', False):
+                            cached_macs = list(self.ap_cache.keys())[:5]  # Show first 5
+                            logging.debug(f"[TripleGeo] Available cached MACs: {cached_macs}")
+            except Exception as e:
+                logging.error(f"[TripleGeo] Error accessing cache: {e}")
 
-        # Extract data with fallback hierarchy: cached > ap object > defaults
-        rssi = cached_ap.get('rssi') or getattr(ap, 'rssi', None) or "N/A"
-        channel = cached_ap.get('channel') or getattr(ap, 'channel', None) or "N/A"
-        encryption = cached_ap.get('encryption') or getattr(ap, 'encryption', None) or "N/A"
-        frequency = cached_ap.get('frequency') or self._calculate_frequency(channel)
-        band = cached_ap.get('band') or self._calculate_band(channel)
-        vendor = cached_ap.get('vendor') or self._lookup_oui_vendor(ap_mac) if ap_mac else "Unknown"
+        # Extract data with comprehensive fallback hierarchy
+        try:
+            rssi = cached_ap.get('rssi') or getattr(ap, 'rssi', None) or "N/A"
+            channel = cached_ap.get('channel') or getattr(ap, 'channel', None) or "N/A"
+            encryption = cached_ap.get('encryption') or getattr(ap, 'encryption', None) or "N/A"
+            frequency = cached_ap.get('frequency') or self._calculate_frequency(channel)
+            band = cached_ap.get('band') or self._calculate_band(channel)
+            vendor = cached_ap.get('vendor') or (self._lookup_oui_vendor(ap_mac) if ap_mac else "Unknown")
+        except Exception as e:
+            logging.error(f"[TripleGeo] Error extracting AP data: {e}")
+            rssi = channel = encryption = frequency = "N/A"
+            band = "unknown"
+            vendor = "Unknown"
 
-        # Calculate SNR
-        noise = getattr(ap, "noise", None)
+        # Calculate SNR with error handling
         snr = "N/A"
-        if isinstance(rssi, (int, float)) and isinstance(noise, (int, float)):
-            snr = rssi - noise
-        elif isinstance(rssi, (int, float)) and rssi != 0:
-            estimated_noise = -95  # Typical noise floor
-            snr = rssi - estimated_noise
+        try:
+            noise = getattr(ap, "noise", None)
+            if isinstance(rssi, (int, float)) and isinstance(noise, (int, float)):
+                snr = rssi - noise
+            elif isinstance(rssi, (int, float)) and rssi != 0:
+                estimated_noise = -95  # Typical noise floor
+                snr = rssi - estimated_noise
+        except Exception as e:
+            logging.warning(f"[TripleGeo] Error calculating SNR: {e}")
 
         # Use cached GPS if current GPS unavailable
         if not gps_coord and cached_ap.get('gps_coord'):
             gps_coord = cached_ap['gps_coord']
 
+        # Get client MAC with error handling
+        client_mac = ""
+        try:
+            if client and hasattr(client, 'mac'):
+                client_mac = client.mac
+            elif isinstance(client, dict):
+                client_mac = client.get('mac', '')
+        except Exception as e:
+            logging.warning(f"[TripleGeo] Error extracting client MAC: {e}")
+
         entry = {
             "timestamp":        time.time(),
             "ssid":             ssid,
             "bssid":            ap_mac or "Unknown",
-            "client":           getattr(client, "mac", "") if client else "",
+            "client":           client_mac,
             "rssi":             rssi,
             "snr":              snr,
             "channel":          channel,
@@ -358,8 +419,12 @@ class TripleGeo(plugins.Plugin):
             except Exception as e:
                 logging.warning(f"[TripleGeo] Could not save coord file: {e}")
 
-        self.pending.append(filename)
-        self._save_pending()
+        # Save state
+        try:
+            self.pending.append(filename)
+            self._save_pending()
+        except Exception as e:
+            logging.warning(f"[TripleGeo] Error saving pending: {e}")
 
         logging.info(f"[TripleGeo] Triggering Discord webhook for handshake: {ssid}")
         self.send_discord_webhook(entry, title=":handshake: New Handshake Captured")
@@ -372,69 +437,70 @@ class TripleGeo(plugins.Plugin):
             return
 
         logging.info(f"[TripleGeo] Preparing Discord webhook: {title}")
-        ts = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(event["timestamp"]))
-
-        rates = event.get("supported_rates", [])
-        ext_rates = event.get("extended_supported_rates", [])
-        all_rates = rates + ext_rates if isinstance(rates, list) and isinstance(ext_rates, list) else []
-        rates_str = ", ".join([f"{r} Mbps" for r in all_rates[:5]]) if all_rates else "N/A"
-
-        vendor_tags = event.get("vendor_specific_tags", {})
-        vendor_str = ", ".join([f"{k}: {v}" for k, v in vendor_tags.items()][:3]) if vendor_tags else "N/A"
-
-        gps_status = "GPS" if event.get("source") == "gpsd" else "No GPS"
-
-        fields = [
-            {"name":"SSID","value":str(event["ssid"]),"inline":True},
-            {"name":"BSSID","value":str(event["bssid"]),"inline":True},
-            {"name":"Client","value":str(event.get("client","None")),"inline":True},
-            {"name":"Signal","value":f"{event.get('rssi','N/A')} dBm","inline":True},
-            {"name":"SNR","value":f"{event.get('snr','N/A')} dB","inline":True},
-            {"name":"Channel","value":str(event.get("channel","N/A")),"inline":True},
-            {"name":"Frequency","value":f"{event.get('frequency','N/A')} MHz","inline":True},
-            {"name":"Band","value":str(event.get("band","unknown")),"inline":True},
-            {"name":"Encryption","value":str(event.get("encryption","N/A")),"inline":True},
-            {"name":"Vendor","value":str(event.get("vendor","Unknown")),"inline":True},
-            {"name":"Timestamp","value":ts,"inline":True},
-            {"name":"Location","value":f"{gps_status}\n{event.get('lat','N/A')},{event.get('lon','N/A')}","inline":True},
-            {"name":"Altitude","value":f"{event.get('altitude','N/A')} m","inline":True},
-            {"name":"Source","value":str(event.get("source","none")),"inline":True},
-            {"name":"Supported Rates","value":rates_str,"inline":False},
-            {"name":"Vendor Tags","value":vendor_str,"inline":False},
-            {"name":"File","value":str(event.get("handshake_file","")),"inline":False},
-        ]
-
-        # Color coding: Green for GPS, Orange for no GPS, Red for missing data
-        color = 0x00ff00 if event.get("source") == "gpsd" else 0xff6600
-        if event.get('rssi') == 'N/A' and event.get('channel') == 'N/A':
-            color = 0xff0000  # Red for missing technical data
-
-        payload = {
-            "embeds": [
-                {
-                    "title": title,
-                    "fields": fields,
-                    "color": color,
-                    "footer": {"text": f"triplegeo v{self.__version__} | {gps_status} | Cached: {len(self.ap_cache)} APs"}
-                }
-            ]
-        }
 
         try:
-            logging.info(f"[TripleGeo] Sending webhook to Discord...")
+            ts = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(event["timestamp"]))
+
+            rates = event.get("supported_rates", [])
+            ext_rates = event.get("extended_supported_rates", [])
+            all_rates = rates + ext_rates if isinstance(rates, list) and isinstance(ext_rates, list) else []
+            rates_str = ", ".join([f"{r} Mbps" for r in all_rates[:5]]) if all_rates else "N/A"
+
+            vendor_tags = event.get("vendor_specific_tags", {})
+            vendor_str = ", ".join([f"{k}: {v}" for k, v in vendor_tags.items()][:3]) if vendor_tags else "N/A"
+
+            gps_status = "GPS" if event.get("source") == "gpsd" else "No GPS"
+
+            fields = [
+                {"name":"SSID","value":str(event["ssid"]),"inline":True},
+                {"name":"BSSID","value":str(event["bssid"]),"inline":True},
+                {"name":"Client","value":str(event.get("client","None")),"inline":True},
+                {"name":"Signal","value":f"{event.get('rssi','N/A')} dBm","inline":True},
+                {"name":"SNR","value":f"{event.get('snr','N/A')} dB","inline":True},
+                {"name":"Channel","value":str(event.get("channel","N/A")),"inline":True},
+                {"name":"Frequency","value":f"{event.get('frequency','N/A')} MHz","inline":True},
+                {"name":"Band","value":str(event.get("band","unknown")),"inline":True},
+                {"name":"Encryption","value":str(event.get("encryption","N/A")),"inline":True},
+                {"name":"Vendor","value":str(event.get("vendor","Unknown")),"inline":True},
+                {"name":"Timestamp","value":ts,"inline":True},
+                {"name":"Location","value":f"{gps_status}\n{event.get('lat','N/A')},{event.get('lon','N/A')}","inline":True},
+                {"name":"Altitude","value":f"{event.get('altitude','N/A')} m","inline":True},
+                {"name":"Source","value":str(event.get("source","none")),"inline":True},
+                {"name":"Supported Rates","value":rates_str,"inline":False},
+                {"name":"Vendor Tags","value":vendor_str,"inline":False},
+                {"name":"File","value":str(event.get("handshake_file","")),"inline":False},
+            ]
+
+            # Color coding: Green for GPS, Orange for no GPS, Red for missing data
+            color = 0x00ff00 if event.get("source") == "gpsd" else 0xff6600
+            if event.get('rssi') == 'N/A' and event.get('channel') == 'N/A':
+                color = 0xff0000  # Red for missing technical data
+
+            payload = {
+                "embeds": [
+                    {
+                        "title": title,
+                        "fields": fields,
+                        "color": color,
+                        "footer": {"text": f"triplegeo v{self.__version__} | {gps_status} | Cached: {len(self.ap_cache)} APs"}
+                    }
+                ]
+            }
+
             r = requests.post(url, json=payload, timeout=10)
             if r.status_code == 200:
-                logging.info(f"[TripleGeo] ✅ Discord webhook sent successfully!")
+                logging.info(f"[TripleGeo] Discord webhook sent successfully!")
             else:
-                logging.warning(f"[TripleGeo] ❌ Webhook failed: {r.status_code} - {r.text[:200]}")
+                logging.warning(f"[TripleGeo] Webhook failed: {r.status_code} - {r.text[:200]}")
+
         except Exception as e:
-            logging.error(f"[TripleGeo] ❌ Webhook error: {e}")
+            logging.error(f"[TripleGeo] Webhook error: {e}")
 
     def _report_existing_coords(self):
-        """Report existing coordinate files"""
+        """Report existing coordinate files - FIXED"""
         webhook_url = self.options.get('discord_webhook_url', '')
         if not webhook_url:
-            logging.info("[TripleGeo] No Discord webhook URL configured")
+            logging.info("[TripleGeo] No Discord webhook URL configured for coord reporting")
             return
 
         hd = self.options.get("handshake_dir", "/home/pi/handshakes")
@@ -444,57 +510,65 @@ class TripleGeo(plugins.Plugin):
         ]
         files = []
         for pattern in patterns:
-            files.extend(glob.glob(pattern))
+            try:
+                files.extend(glob.glob(pattern))
+            except Exception as e:
+                logging.warning(f"[TripleGeo] Error globbing pattern {pattern}: {e}")
 
         if not files:
             logging.info("[TripleGeo] No existing coord.json files to report.")
             return
 
-        logging.info(f"[TripleGeo] Reporting {len(files)} existing coord.json files.")
+        logging.info(f"[TripleGeo] Found {len(files)} existing coord.json files.")
 
     def _load_storage(self):
-        """Load processed handshakes and pending files"""
+        """Load processed handshakes and pending files - COMPLETELY FIXED"""
+        # Load processed file
         pf = self.options["processed_file"]
+        self.processed = set()
         if os.path.exists(pf):
             try:
-                with open(pf) as f:
+                with open(pf, 'r') as f:
                     self.processed = set(json.load(f))
+                logging.debug(f"[TripleGeo] Loaded {len(self.processed)} processed entries")
             except Exception as e:
-                logging.warning(f"[TripleGeo] load processed: {e}")
+                logging.warning(f"[TripleGeo] Error loading processed file: {e}")
                 try:
                     with open(pf, "w") as f:
                         json.dump([], f)
                 except Exception:
                     pass
 
+        # Load pending file
         pend = self.options["pending_file"]
+        self.pending = []
         if os.path.exists(pend):
             try:
-                with open(pend) as f:
+                with open(pend, 'r') as f:
                     content = f.read().strip()
                     if content:
                         self.pending = json.loads(content)
                     else:
                         self.pending = []
+                logging.debug(f"[TripleGeo] Loaded {len(self.pending)} pending entries")
             except Exception as e:
-                logging.warning(f"[TripleGeo] load pending: {e}")
+                logging.warning(f"[TripleGeo] Error loading pending file: {e}")
                 try:
                     with open(pend, "w") as f:
                         json.dump([], f)
-                    self.pending = []
                 except Exception:
-                    self.pending = []
+                    pass
 
     def _save_pending(self):
-        """Save pending handshakes"""
+        """Save pending handshakes - FIXED"""
         try:
             with open(self.options["pending_file"], "w") as f:
                 json.dump(self.pending, f)
         except Exception as e:
-            logging.warning(f"[TripleGeo] save pending: {e}")
+            logging.warning(f"[TripleGeo] Error saving pending: {e}")
 
     def _connect_gpsd(self):
-        """Connect to GPS daemon"""
+        """Connect to GPS daemon - COMPLETE IMPLEMENTATION"""
         if not HAS_GPSD:
             logging.warning("[TripleGeo] gpsd-py3 module not found; GPS disabled.")
             return
@@ -502,34 +576,38 @@ class TripleGeo(plugins.Plugin):
         try:
             logging.info("[TripleGeo] Connecting to local gpsd socket")
             self.gps_session = gps.gps()
+            self.gps_session.stream(gps.WATCH_ENABLE | gps.WATCH_NEWSTYLE)
             logging.info("[TripleGeo] Connected to gpsd for GPS.")
         except Exception as e:
             self.gps_session = None
             logging.warning(f"[TripleGeo] Could not connect to gpsd: {e}")
 
     def get_gps_coord(self, max_attempts=10):
-        """Get GPS coordinates with proper error handling"""
+        """Get GPS coordinates with proper error handling - COMPLETE IMPLEMENTATION"""
         if not self.gps_session:
             return self._gps_last
 
         try:
             for _ in range(max_attempts):
                 report = self.gps_session.next()
-                if report.get('class') == 'TPV' and getattr(report, 'mode', 1) >= 2 and hasattr(report, 'lat') and hasattr(report, 'lon'):
+                if (report.get('class') == 'TPV' and 
+                    getattr(report, 'mode', 1) >= 2 and 
+                    hasattr(report, 'lat') and hasattr(report, 'lon')):
+
                     lat = float(report.lat)
                     lon = float(report.lon)
                     alt = getattr(report, 'alt', None)
+
                     if alt is not None:
                         self._gps_last = (lat, lon, float(alt))
                     else:
                         self._gps_last = (lat, lon)
                     return self._gps_last
+
         except StopIteration:
             logging.debug("[TripleGeo] No GPS data available")
-            return None
         except Exception as e:
             logging.warning(f"[TripleGeo] GPS exception: {e}")
-            return None
 
         return self._gps_last
 
@@ -551,20 +629,21 @@ class TripleGeo(plugins.Plugin):
         return None, None
 
     def _save_processed(self):
-        """Save processed entries to file"""
+        """Save processed entries to file - FIXED"""
         try:
             with open(self.options["processed_file"], "w") as f:
                 json.dump(list(self.processed), f)
         except Exception as e:
-            logging.warning(f"[TripleGeo] save processed: {e}")
+            logging.warning(f"[TripleGeo] Error saving processed: {e}")
 
     def on_unload(self, ui):
-        """Clean up when plugin unloads"""
+        """Clean up when plugin unloads - COMPLETELY FIXED"""
         try:
             self._save_processed()
             self._save_pending()
-            if self.gps_session:
+            if hasattr(self, 'gps_session') and self.gps_session:
                 self.gps_session.close()
+            logging.info("[TripleGeo] Plugin cleanup completed")
         except Exception as e:
-            logging.warning(f"[TripleGeo] unload error: {e}")
+            logging.warning(f"[TripleGeo] Error during unload: {e}")
         logging.info("[TripleGeo] Plugin unloaded")

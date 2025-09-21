@@ -14,12 +14,12 @@ except ImportError:
 
 class TripleGeo(plugins.Plugin):
     __author__ = "disco252"
-    __version__ = "1.8-fixed"
+    __version__ = "1.8"
     __license__ = "GPL3"
     __description__ = (
         "Advanced geolocation, AP/client mapping, and Discord notifications for Pwnagotchi. "
         "Uses GPS, Google, or WiGLE; posts detailed events to Discord with IEEE OUI lookup. "
-        "Works with or without GPS hardware. FIXED data extraction from AP objects."
+        "Works with or without GPS hardware."
     )
     __name__ = "triplegeo"
     __defaults__ = {

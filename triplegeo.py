@@ -1,4 +1,3 @@
-import logging
 import requests
 import os
 import json
@@ -15,12 +14,12 @@ except ImportError:
 
 class TripleGeo(plugins.Plugin):
     __author__ = "disco252"
-    __version__ = "1.7"
+    __version__ = "1.8-fixed"
     __license__ = "GPL3"
     __description__ = (
         "Advanced geolocation, AP/client mapping, and Discord notifications for Pwnagotchi. "
         "Uses GPS, Google, or WiGLE; posts detailed events to Discord with IEEE OUI lookup. "
-        "Works with or without GPS hardware."
+        "Works with or without GPS hardware. FIXED data extraction from AP objects."
     )
     __name__ = "triplegeo"
     __defaults__ = {
@@ -345,43 +344,114 @@ class TripleGeo(plugins.Plugin):
         self.send_discord_webhook(entry)
 
     def on_handshake(self, agent, filename, ap, client):
-        """Process handshake captures - main webhook trigger"""
+        """Process handshake captures - main webhook trigger - ENHANCED VERSION"""
         if not self.options.get("enabled", False):
             return
 
         logging.info(f"[TripleGeo] Processing handshake: {filename}")
 
+        # Debug: Log the actual AP object structure
+        logging.debug(f"[TripleGeo] AP object keys: {list(vars(ap).keys()) if hasattr(ap, '__dict__') else 'No __dict__'}")
+        logging.debug(f"[TripleGeo] AP object: {ap}")
+
         gps_coord = self.get_gps_coord() if HAS_GPSD else None
         shortname = os.path.basename(filename).replace(".pcap", "")
         ssid = shortname.split("_", 1)[0]
 
-        noise = getattr(ap, "noise", None)
-        rssi  = getattr(ap, "rssi", None)
-        snr   = "N/A"
-        if isinstance(rssi, (int,float)) and isinstance(noise, (int,float)):
-            snr = rssi - noise
+        # Try multiple ways to extract AP data
+        rssi = None
+        channel = None
+        frequency = None
+        encryption = None
 
-        freq = getattr(ap, "frequency", None)
+        # Method 1: Direct attributes
+        if hasattr(ap, 'rssi'):
+            rssi = ap.rssi
+        elif hasattr(ap, 'signal'):
+            rssi = ap.signal
+
+        if hasattr(ap, 'channel'):
+            channel = ap.channel
+        elif hasattr(ap, 'ch'):
+            channel = ap.ch
+
+        if hasattr(ap, 'frequency'):
+            frequency = ap.frequency
+        elif hasattr(ap, 'freq'):
+            frequency = ap.freq
+
+        if hasattr(ap, 'encryption'):
+            encryption = ap.encryption
+        elif hasattr(ap, 'enc'):
+            encryption = ap.enc
+        elif hasattr(ap, 'crypto'):
+            encryption = ap.crypto
+
+        # Method 2: Try as dictionary
+        if isinstance(ap, dict):
+            rssi = rssi or ap.get('rssi') or ap.get('signal')
+            channel = channel or ap.get('channel') or ap.get('ch')  
+            frequency = frequency or ap.get('frequency') or ap.get('freq')
+            encryption = encryption or ap.get('encryption') or ap.get('enc') or ap.get('crypto')
+
+        # Method 3: Try accessing internal data
+        if hasattr(ap, '__dict__'):
+            ap_dict = vars(ap)
+            rssi = rssi or ap_dict.get('rssi') or ap_dict.get('signal')
+            channel = channel or ap_dict.get('channel') or ap_dict.get('ch')
+            frequency = frequency or ap_dict.get('frequency') or ap_dict.get('freq')  
+            encryption = encryption or ap_dict.get('encryption') or ap_dict.get('enc')
+
+        # Calculate derived values
+        noise = getattr(ap, "noise", None)
+        snr = "N/A"
+        if isinstance(rssi, (int, float)) and isinstance(noise, (int, float)):
+            snr = rssi - noise
+        elif isinstance(rssi, (int, float)) and rssi != 0:
+            # Estimate noise floor for SNR calculation
+            estimated_noise = -95  # Typical noise floor
+            snr = rssi - estimated_noise
+
+        # Calculate frequency from channel if missing
+        if not frequency and isinstance(channel, int):
+            if 1 <= channel <= 14:
+                frequency = 2412 + (channel - 1) * 5
+            elif 36 <= channel <= 165:
+                frequency = 5000 + channel * 5
+            elif channel >= 1 and channel <= 233:  # 6 GHz
+                frequency = 5955 + (channel - 1) * 5
+
+        # Calculate band from frequency
         band = "unknown"
-        if isinstance(freq, (int,float)):
-            band = "2.4 GHz" if freq < 3000 else "5 GHz" if freq < 6000 else "6 GHz"
+        if isinstance(frequency, (int, float)):
+            if frequency < 3000:
+                band = "2.4 GHz" 
+            elif frequency < 6000:
+                band = "5 GHz"
+            else:
+                band = "6 GHz"
+
+        # Get MAC and vendor info
+        ap_mac = getattr(ap, "mac", None) or getattr(ap, "bssid", None)
+        if isinstance(ap, dict):
+            ap_mac = ap_mac or ap.get("mac") or ap.get("bssid")
 
         entry = {
             "timestamp":        time.time(),
             "ssid":             ssid,
-            "bssid":            getattr(ap, "mac", None),
-            "client":           getattr(client, "mac", ""),
-            "rssi":             rssi or "N/A",
+            "bssid":            ap_mac,
+            "client":           getattr(client, "mac", "") if client else "",
+            "rssi":             rssi if rssi is not None else "N/A",
             "snr":              snr,
-            "channel":          getattr(ap, "channel", "N/A"),
-            "frequency":        freq or "N/A",
+            "channel":          channel if channel is not None else "N/A",
+            "frequency":        frequency if frequency is not None else "N/A", 
             "band":             band,
-            "encryption":       getattr(ap, "encryption", "N/A"),
+            "encryption":       encryption if encryption else "N/A",
             "lat":              gps_coord[0] if gps_coord else "N/A",
             "lon":              gps_coord[1] if gps_coord else "N/A",
             "altitude":         gps_coord[2] if gps_coord and len(gps_coord) > 2 else "N/A",
             "source":           "gpsd" if gps_coord else "none",
-            "vendor":           self._lookup_oui_vendor(getattr(ap, "mac", "")),
+            "vendor":           self._lookup_oui_vendor(ap_mac) if ap_mac else "Unknown",
             "handshake_file":   filename,
             "supported_rates":            getattr(ap, "supported_rates", []),
             "extended_supported_rates":   getattr(ap, "extended_supported_rates", []),
@@ -390,6 +460,10 @@ class TripleGeo(plugins.Plugin):
             "device_fingerprint": getattr(agent, "fingerprint", lambda:"Unknown")(),
         }
 
+        # Log what we actually extracted
+        logging.info(f"[TripleGeo] Extracted - RSSI: {rssi}, Channel: {channel}, Freq: {frequency}, Enc: {encryption}")
+
+        # Save GPS coordinates if available  
         if gps_coord:
             coord_file = filename.replace(".pcap", ".triplegeo.coord.json")
             coord_data = {"coord": {"lat": gps_coord[0], "lon": gps_coord[1]}, "source": "gpsd"}
@@ -425,7 +499,7 @@ class TripleGeo(plugins.Plugin):
         vendor_tags = event.get("vendor_specific_tags", {})
         vendor_str = ", ".join([f"{k}: {v}" for k, v in vendor_tags.items()][:3]) if vendor_tags else "N/A"
 
-        gps_status = "GPS" if event.get("source") == "gpsd" else "No GPS"
+        gps_status = "ðŸ›°ï¸ GPS" if event.get("source") == "gpsd" else "ðŸ“ No GPS"
 
         fields = [
             {"name":"SSID","value":str(event["ssid"]),"inline":True},
@@ -464,9 +538,9 @@ class TripleGeo(plugins.Plugin):
             logging.info(f"[TripleGeo] Sending webhook to Discord...")
             r = requests.post(url, json=payload, timeout=10)
             if r.status_code == 200:
-                logging.info(f"[TripleGeo] âœ… Discord webhook sent successfully!")
+                logging.info(f"[TripleGeo] Discord webhook sent successfully!")
             else:
-                logging.warning(f"[TripleGeo] âŒ Webhook failed: {r.status_code} - {r.text[:200]}")
+                logging.warning(f"[TripleGeo] Webhook failed: {r.status_code} - {r.text[:200]}")
         except Exception as e:
             logging.error(f"[TripleGeo] âŒ Webhook error: {e}")
 
@@ -487,4 +561,4 @@ class TripleGeo(plugins.Plugin):
                 self.gps_session.close()
         except Exception as e:
             logging.warning(f"[TripleGeo] unload error: {e}")
-        logging.info("[TripleGeo] Plugin unloaded")
+        logging.info("[TripleGeo] Plugin unloaded") unloaded")

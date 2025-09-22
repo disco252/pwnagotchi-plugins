@@ -18,8 +18,6 @@ sudo wget https://raw.githubusercontent.com/YOUR_REPO/triplegeo.py \
 # 2. Install GPS support (optional)
 sudo apt update
 sudo apt install gpsd gpsd-clients
-sudo pip3 install gpsd-py3<br>
-sudo pip3 install requests bleak (may need to add --break-system.packages at the end to install these)
 
 # 3. Download OUI database (optional)
 sudo wget http://standards-oui.ieee.org/oui/oui.txt \
@@ -120,13 +118,14 @@ ble_wardrive.py will scan on it's own loop, below is an interval you can set. It
 
 
 
-This does not interfere with any bluetooth tether. Note: This script in it's current state does not invoke the WiFi - Google Geolocation API is incomplete, however it functions via GPSD with a GPS dongle.
+This does not interfere with any bluetooth tether. Note: This script in it's current state does not invoke the WiFi - Google Geolocation API is incomplete, however it functions via GPSD with a GPS dongle. Please sure in config.toml, that beettercap.silence = [] does not incclude ble.device.new or ble.device.lost. 
 
 sudo wget https://standards-oui.ieee.org/oui/oui.txt -O /usr/local/share/pwnagotchi/ieee_oui.txt
 
 
-sudo pip3 install bleak requests
-
+sudo pip3 install bleak requests<br>
+sudo pip3 install gpsd-py3<br>
+sudo pip3 install requests bleak (may need to add --break-system.packages at the end to install these)
 
 main.plugins.ble_wardrive.enabled = true<br>
 main.plugins.ble_wardrive.discord_webhook_url = "https://discord.com/api/webhooks/XXX/YYY"<br>

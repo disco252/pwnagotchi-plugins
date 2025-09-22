@@ -51,26 +51,6 @@ main.plugins.triplegeo.discord_webhook_url = "https://discord.com/api/webhooks/X
 
 ======================================================================================================================================================================================
 
-pcapmerger.py
-
-This is a plugin that will automatically merge captured WiFi handshakes, pcap files by both SSID and BSSID, ensuring only valid handshakes from the same network are combined. The output is /handshakes/merged, so ensure /merged/ is a created directory.
-
-Instructions:<br>
-sudo apt-get update<br>
-sudo apt-get install tshark wireshark-common<br>
-Save pcapmerger.py in your /custom-plugins/ folder<br>
-Add your custom paths:<br>
-handshake_dir = "/your/path/to/handshakes"<br>
-output_dir = "/your/path/to/merged"<br>
-
-Edit your config.toml:<br>
-main.plugins.pcapmerger.enabled = true 
-
-To verify, ensure your pwnagotchi has an internet connection, then check /merged/ output directory for newly merged .pcap files. You can also use journalctl | grep pcapmerger, or pwnagotchi --debug.
-
-
-======================================================================================================================================================================================
-
 Fastergotchi, because why not?<br>
 edit config.toml and add:<br>
 personality.recon_time = 5<br>

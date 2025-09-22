@@ -98,8 +98,6 @@ main.plugins.net-pos.update_interval = 300<br>
 
 ble_wardrive.py will scan on it's own loop, below is an interval you can set. It will report what it sees on Discord, RSSI, name, latitude, longitude, altitude(from gps or google api), device fingerprinting/classification, mesh network detection, vulnerability detection (static mac, weak names, services), anomaly detection(intervals and abnormal data), rogue device detection. This uses [IEEE OUI.txt](https://standards-oui.ieee.org/oui/oui.txt) for OUI lookup. 
 
-<img width="705" height="682" alt="Screenshot_72" src="https://github.com/user-attachments/assets/0aecd2e9-a22e-43b8-99d9-c4a1aaa4d1c8" />
-
 
 
 This does not interfere with any bluetooth tether. Note: This script in it's current state does not invoke the WiFi - Google Geolocation API is incomplete, however it functions via GPSD with a GPS dongle. Please sure in config.toml, that beettercap.silence = [] does not incclude ble.device.new or ble.device.lost. 

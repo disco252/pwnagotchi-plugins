@@ -45,7 +45,30 @@ main.plugins.triplegeo.global_log_file = "/root/triplegeo_globalaplog.jsonl"<br>
 main.plugins.triplegeo.discord_webhook_url = "https://discord.com/api/webhooks/XXX/YYY"<br>
 
 
-You may be required to edit "etc/hosts" to include "UR.IP.XX.XX discord.com" for the webhook to function.
+You may be required to edit "etc/hosts" to include "UR.IP.XX.XX discord.com" for the webhook to function. You may also want to make bt-tether.service at /etc/systemd/system/bt-tether.service<br>
+[Unit]
+Description=Auto Bluetooth PAN tether
+After=bluetooth.target network.target
+Wants=bluetooth.target
+
+[Service]
+Type=oneshot
+# Connect to phone’s NAP
+ExecStart=/bin/sh -c 'sleep 10; bluetoothctl connect 98:98:FB:10:5A:1F || true'
+# Start PAN client
+ExecStart=/bin/sh -c 'bt-network -c 98:98:FB:10:5A:1F nap || true'
+# Give the kernel a moment to create bnep0
+ExecStart=/bin/sleep 2
+# Bring up bnep0
+ExecStart=/usr/sbin/ip link set bnep0 up
+# Assign static IPv4
+ExecStart=/usr/sbin/ip addr add 192.168.44.44/24 dev bnep0
+# Add default route via phone gateway
+ExecStart=/usr/sbin/ip route replace default via 192.168.44.1 dev bnep0 metric 100
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target<br>
 
 <img width="795" height="760" alt="Screenshot_73" src="https://github.com/user-attachments/assets/7842b107-c827-4e82-be3a-b324d7b658d7" />
 

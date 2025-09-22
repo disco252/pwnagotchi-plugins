@@ -12,13 +12,14 @@ sudo apt update(never upgrade)
 # 1. Install to custom plugins directory
 sudo wget https://raw.githubusercontent.com/YOUR_REPO/triplegeo.py \
   -O /usr/local/share/pwnagotchi/custom-plugins/triplegeo.py<br>
-sudo pip3 install requests gpsd-py3 bleak (may need to add --break-system.packages at the end to install these)
+
 
 
 # 2. Install GPS support (optional)
 sudo apt update
 sudo apt install gpsd gpsd-clients
-sudo pip3 install gpsd-py3
+sudo pip3 install gpsd-py3<br>
+sudo pip3 install requests bleak (may need to add --break-system.packages at the end to install these)
 
 # 3. Download OUI database (optional)
 sudo wget http://standards-oui.ieee.org/oui/oui.txt \

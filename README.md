@@ -45,24 +45,21 @@ main.plugins.triplegeo.global_log_file = "/root/triplegeo_globalaplog.jsonl"<br>
 main.plugins.triplegeo.discord_webhook_url = "https://discord.com/api/webhooks/XXX/YYY"<br>
 
 
-You may be required to edit "etc/hosts" to include "UR.IP.XX.XX discord.com" for the webhook to function. You may also want to make bt-tether.service at /etc/systemd/system/bt-tether.service which may look something like:<br>
-[Unit]<br>
-Description=Auto Bluetooth PAN tether<br>
-After=bluetooth.target network-online.target<br>
-Wants=bluetooth.target network-online.target<br>
 
+If you are running into issues with your bluetooth tether is not reconnecting upon boot (since triplegeo.py and my other ones call for bluetooth/internet connect)<br>
+sudo apt update<br>
+sudo apt install bluez bluez-tools<br>
+sudo nano /etc/systemd/system/bluetooth.service.d/override.conf<br>
 [Service]<br>
-Type=oneshot<br>
-ExecStart=/bin/sleep 15<br>
-ExecStart=/bin/sh -c 'bt-network -c INSERT:YOUR:PHONE:MAC nap || true'<br>
-ExecStart=/bin/sleep 5<br>
-ExecStart=/usr/sbin/ip link set bnep0 up<br>
-ExecStart=/usr/sbin/ip addr replace 192.168.44.44/24 dev bnep0<br>
-ExecStart=/usr/sbin/ip route replace default via 192.168.44.1 dev bnep0 metric 100<br>
-RemainAfterExit=yes<br>
+ExecStart=<br>
+ExecStart=/usr/libexec/bluetooth/bluetoothd --experimental<br>
 
-[Install]<br>
-WantedBy=multi-user.target<br>
+sudo crontab -e (add this at the end)<br>
+@reboot /usr/bin/bt-network -c INSERT:YOUR:PHONE:MAC nap &<br>
+@reboot sleep 5 && /sbin/ip link set bnep0 up<br>
+@reboot sleep 6 && /sbin/ip addr add 192.168.44.44/24 dev bnep0<br>
+@reboot sleep 7 && /sbin/ip route replace default via 192.168.44.1 dev bnep0 metric 100<br>
+
 
 <img width="795" height="760" alt="Screenshot_73" src="https://github.com/user-attachments/assets/7842b107-c827-4e82-be3a-b324d7b658d7" />
 

@@ -11,7 +11,9 @@ sudo apt update(never upgrade)
 
 # 1. Install to custom plugins directory
 sudo wget https://raw.githubusercontent.com/YOUR_REPO/triplegeo.py \
-  -O /usr/local/share/pwnagotchi/custom-plugins/triplegeo.py
+  -O /usr/local/share/pwnagotchi/custom-plugins/triplegeo.py<br>
+sudo pip3 install requests gpsd-py3 bleak (may need to add --break-system.packages at the end to install these)
+
 
 # 2. Install GPS support (optional)
 sudo apt update

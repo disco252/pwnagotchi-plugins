@@ -46,22 +46,6 @@ main.plugins.triplegeo.global_log_file = "/root/triplegeo_globalaplog.jsonl"<br>
 main.plugins.triplegeo.discord_webhook_url = "https://discord.com/api/webhooks/XXX/YYY"<br>
 
 
-
-# If you are running into issues with your bluetooth tether not reconnecting upon boot (since triplegeo.py and my other ones call for bluetooth/internet connect)<br>
-sudo apt update<br>
-sudo apt install bluez bluez-tools<br>
-sudo nano /etc/systemd/system/bluetooth.service.d/override.conf<br>
-[Service]<br>
-ExecStart=<br>
-ExecStart=/usr/libexec/bluetooth/bluetoothd --experimental<br>
-
-sudo crontab -e (add this at the end)<br>
-@reboot /usr/bin/bt-network -c INSERT:YOUR:PHONE:MAC nap &<br>
-@reboot sleep 5 && /sbin/ip link set bnep0 up<br>
-@reboot sleep 6 && /sbin/ip addr add 192.168.44.44/24 dev bnep0<br>
-@reboot sleep 7 && /sbin/ip route replace default via 192.168.44.1 dev bnep0 metric 100<br>
-
-
 <img width="795" height="760" alt="Screenshot_73" src="https://github.com/user-attachments/assets/7842b107-c827-4e82-be3a-b324d7b658d7" />
 
 
@@ -122,14 +106,16 @@ This does not interfere with any bluetooth tether. Note: This script in it's cur
 
 sudo wget https://standards-oui.ieee.org/oui/oui.txt -O /usr/local/share/pwnagotchi/ieee_oui.txt
 
+# If you are running into issues with your bluetooth tether not reconnecting upon boot (since triplegeo.py and my other ones call for bluetooth/internet connect)<br>
+sudo apt update<br>
+sudo apt install bluez bluez-tools<br>
+sudo nano /etc/systemd/system/bluetooth.service.d/override.conf<br>
+[Service]<br>
+ExecStart=<br>
+ExecStart=/usr/libexec/bluetooth/bluetoothd --experimental<br>
 
-sudo pip3 install bleak requests<br>
-sudo pip3 install gpsd-py3<br>
-sudo pip3 install requests bleak (may need to add --break-system.packages at the end to install these)
-
-main.plugins.ble_wardrive.enabled = true<br>
-main.plugins.ble_wardrive.discord_webhook_url = "https://discord.com/api/webhooks/XXX/YYY"<br>
-main.plugins.ble_wardrive.scan_interval = 10<br>
-main.plugins.ble_wardrive.scan_duration = 5<br>
-main.plugins.ble_wardrive.google_api_key = "GOOGLE GEO LOCATION API KEY"
-main.plugins.ble_wardrive.use_gpsd = true # or false, if false, will still attempt to use Google API "fallback"
+sudo crontab -e (add this at the end)<br>
+@reboot /usr/bin/bt-network -c INSERT:YOUR:PHONE:MAC nap &<br>
+@reboot sleep 5 && /sbin/ip link set bnep0 up<br>
+@reboot sleep 6 && /sbin/ip addr add 192.168.44.44/24 dev bnep0<br>
+@reboot sleep 7 && /sbin/ip route replace default via 192.168.44.1 dev bnep0 metric 100<br>

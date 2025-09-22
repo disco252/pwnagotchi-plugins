@@ -48,16 +48,16 @@ main.plugins.triplegeo.discord_webhook_url = "https://discord.com/api/webhooks/X
 You may be required to edit "etc/hosts" to include "UR.IP.XX.XX discord.com" for the webhook to function. You may also want to make bt-tether.service at /etc/systemd/system/bt-tether.service which may look something like:<br>
 [Unit]<br>
 Description=Auto Bluetooth PAN tether<br>
-After=bluetooth.target network.target<br>
-Wants=bluetooth.target<br>
+After=bluetooth.target network-online.target<br>
+Wants=bluetooth.target network-online.target<br>
 
 [Service]<br>
 Type=oneshot<br>
-ExecStart=/bin/sh -c 'sleep 10; bluetoothctl connect INSERT-PHONE-MAC-ADDRESS || true'<br>
-ExecStart=/bin/sh -c 'bt-network -c INSERT-PHONE-MAC-ADDRESS nap || true'<br>
-ExecStart=/bin/sleep 2<br>
+ExecStart=/bin/sleep 15<br>
+ExecStart=/bin/sh -c 'bt-network -c INSERT:YOUR:PHONE:MAC nap || true'<br>
+ExecStart=/bin/sleep 5<br>
 ExecStart=/usr/sbin/ip link set bnep0 up<br>
-ExecStart=/usr/sbin/ip addr add 192.168.44.44/24 dev bnep0<br>
+ExecStart=/usr/sbin/ip addr replace 192.168.44.44/24 dev bnep0<br>
 ExecStart=/usr/sbin/ip route replace default via 192.168.44.1 dev bnep0 metric 100<br>
 RemainAfterExit=yes<br>
 

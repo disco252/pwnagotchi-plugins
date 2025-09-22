@@ -46,7 +46,7 @@ main.plugins.triplegeo.discord_webhook_url = "https://discord.com/api/webhooks/X
 
 
 
-If you are running into issues with your bluetooth tether is not reconnecting upon boot (since triplegeo.py and my other ones call for bluetooth/internet connect)<br>
+#If you are running into issues with your bluetooth tether is not reconnecting upon boot (since triplegeo.py and my other ones call for bluetooth/internet connect)<br>
 sudo apt update<br>
 sudo apt install bluez bluez-tools<br>
 sudo nano /etc/systemd/system/bluetooth.service.d/override.conf<br>

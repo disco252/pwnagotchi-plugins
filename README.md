@@ -53,8 +53,8 @@ Wants=bluetooth.target<br>
 
 [Service]<br>
 Type=oneshot<br>
-ExecStart=/bin/sh -c 'sleep 10; bluetoothctl connect 98:98:FB:10:5A:1F || true'<br>
-ExecStart=/bin/sh -c 'bt-network -c 98:98:FB:10:5A:1F nap || true'<br>
+ExecStart=/bin/sh -c 'sleep 10; bluetoothctl connect INSERT-PHONE-MAC-ADDRESS || true'<br>
+ExecStart=/bin/sh -c 'bt-network -c INSERT-PHONE-MAC-ADDRESS nap || true'<br>
 ExecStart=/bin/sleep 2<br>
 ExecStart=/usr/sbin/ip link set bnep0 up<br>
 ExecStart=/usr/sbin/ip addr add 192.168.44.44/24 dev bnep0<br>

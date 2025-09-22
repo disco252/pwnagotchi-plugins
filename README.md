@@ -25,7 +25,7 @@ sudo wget http://standards-oui.ieee.org/oui/oui.txt \
 
 # 4. Restart Pwnagotchi
 sudo systemctl restart pwnagotchi
-Ensure GPS is connected, then point GPSD at the device using:<br>
+Ensure GPS is connected, then point GPSD at the device using(it may not be USB0, depending upon what device you're using):<br>
 sudo gpsd /dev/ttyUSB0 -F /var/run/gpsd.sock
 
 

@@ -39,9 +39,11 @@ main.plugins.triplegeo.wigle_token = ""<br>
 main.plugins.triplegeo.handshake_dir = "/home/pi/handshakes"<br>
 main.plugins.triplegeo.processed_file = "/root/.triplegeo_processed"<br>
 main.plugins.triplegeo.pending_file = "/root/.triplegeo_pending"<br>
-main.plugins.triplegeo.wigle_delay = 2<br>
-main.plugins.triplegeo.max_wigle_per_minute = 10<br>
-main.plugins.triplegeo.wigle_upload = true<br>
+main.plugins.triplegeo.wigle_upload = true
+main.plugins.triplegeo.wigle_user = "your_wigle_username"
+main.plugins.triplegeo.wigle_token = "your_wigle_api_token"
+main.plugins.triplegeo.wigle_delay = 2
+main.plugins.triplegeo.max_wigle_per_minute = 10
 main.plugins.triplegeo.global_log_file = "/root/triplegeo_globalaplog.jsonl"<br>
 main.plugins.triplegeo.discord_webhook_url = "https://discord.com/api/webhooks/XXX/YYY"<br>
 

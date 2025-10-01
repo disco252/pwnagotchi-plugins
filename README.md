@@ -34,8 +34,6 @@ Here is an example of what needs to be in config.toml:
 main.plugins.triplegeo.enabled = true<br>
 main.plugins.triplegeo.mode = ["gps", "google", "wigle"]<br>
 main.plugins.triplegeo.google_api_key = ""<br>
-main.plugins.triplegeo.wigle_user = ""<br>
-main.plugins.triplegeo.wigle_token = ""<br>
 main.plugins.triplegeo.handshake_dir = "/home/pi/handshakes"<br>
 main.plugins.triplegeo.processed_file = "/root/.triplegeo_processed"<br>
 main.plugins.triplegeo.pending_file = "/root/.triplegeo_pending"<br>

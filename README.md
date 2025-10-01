@@ -32,18 +32,32 @@ sudo gpsd /dev/ttyUSB0 -F /var/run/gpsd.sock
 Here is an example of what needs to be in config.toml:
 
 main.plugins.triplegeo.enabled = true<br>
-main.plugins.triplegeo.mode = ["gps", "google", "wigle"]<br>
-main.plugins.triplegeo.google_api_key = ""<br>
-main.plugins.triplegeo.handshake_dir = "/home/pi/handshakes"<br>
+main.plugins.triplegeo.handshake_dir = "/root/handshakes"<br>
 main.plugins.triplegeo.processed_file = "/root/.triplegeo_processed"<br>
 main.plugins.triplegeo.pending_file = "/root/.triplegeo_pending"<br>
+main.plugins.triplegeo.cache_dir = "/root/.cache/triplegeo"<br>
+main.plugins.triplegeo.cache_expire_minutes = 60<br>
+main.plugins.triplegeo.cache_clean_interval = 15<br>
+main.plugins.triplegeo.global_log_file = "/root/triplegeo_globalaplog.jsonl"<br>
+main.plugins.triplegeo.discord_webhook_url = "YOUR_DISCORD_WEBHOOK_URL_HERE"<br>
+main.plugins.triplegeo.google_api_key = ""<br>
+main.plugins.triplegeo.wigle_user = "YOUR_WIGLE_USERNAME"<br>
+main.plugins.triplegeo.wigle_token = "YOUR_WIGLE_API_TOKEN"<br>
 main.plugins.triplegeo.wigle_upload = true<br>
-main.plugins.triplegeo.wigle_user = "your_wigle_username"<br>
-main.plugins.triplegeo.wigle_token = "your_wigle_api_token"<br>
+main.plugins.triplegeo.wigle_upload_all_aps = true<br>
 main.plugins.triplegeo.wigle_delay = 2<br>
 main.plugins.triplegeo.max_wigle_per_minute = 10<br>
-main.plugins.triplegeo.global_log_file = "/root/triplegeo_globalaplog.jsonl"<br>
-main.plugins.triplegeo.discord_webhook_url = "https://discord.com/api/webhooks/XXX/YYY"<br>
+main.plugins.triplegeo.use_gpsd = true<br>
+main.plugins.triplegeo.gpsd_device = "/dev/ttyAMA0"<br>
+main.plugins.triplegeo.gps_retry_attempts = 5<br>
+main.plugins.triplegeo.gps_retry_delay = 1<br>
+main.plugins.triplegeo.oui_db_path = "/usr/local/share/pwnagotchi/ieee_oui.txt"<br>
+main.plugins.triplegeo.create_coord_file = true<br>
+main.plugins.triplegeo.create_webgps_file = true<br>
+main.plugins.triplegeo.webgps_compatible = true<br>
+main.plugins.triplegeo.log_handshakes = true<br>
+main.plugins.triplegeo.output_format = "json"<br>
+main.plugins.triplegeo.debug_logging = true<br>
 
 
 <img width="795" height="760" alt="Screenshot_73" src="https://github.com/user-attachments/assets/7842b107-c827-4e82-be3a-b324d7b658d7" />

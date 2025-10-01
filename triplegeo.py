@@ -62,11 +62,12 @@ except ImportError:
 
 class TripleGeo(plugins.Plugin):
     __author__ = "disco252"
-    __version__ = "1.9.0"  # Incremented for Wigle upload support
+    __version__ = "1.9" 
     __license__ = "GPL3"
     __description__ = (
         "Enhanced geolocation and Discord notifications for Pwnagotchi handshake captures. "
-        "AP data collection and correlation for Discord reporting. Now with webgpsmap compatibility and Wigle.net upload."
+        "Full wardriving mode with automatic Wigle.net uploads for all detected APs. "
+        "Includes webgpsmap compatibility and GPS retry logic."
     )
     __name__ = "triplegeo"
     __defaults__ = {
@@ -81,12 +82,15 @@ class TripleGeo(plugins.Plugin):
         "wigle_delay": 2,
         "max_wigle_per_minute": 10,
         "wigle_upload": True,
+        "wigle_upload_all_aps": True,  
         "global_log_file": "/root/triplegeo_globalaplog.jsonl",
         "discord_webhook_url": "",
         "oui_db_path": "/usr/local/share/pwnagotchi/ieee_oui.txt",
         "cache_expire_minutes": 60,
         "debug_logging": True,
         "webgps_compatible": True,
+        "gps_retry_attempts": 5,  
+        "gps_retry_delay": 1,   
     }
 
     def __init__(self):
@@ -101,9 +105,9 @@ class TripleGeo(plugins.Plugin):
         self.ap_cache = {}
         self.ap_cache_lock = threading.Lock()
         self.handshake_count = 0
-        # Wigle rate limiting
         self.wigle_upload_count = 0
         self.wigle_upload_window_start = time.time()
+        self.wigle_uploaded_macs = set()
 
     def _create_webgps_file(self, filename, gps_coord):
         """Create webgps-compatible .gps.json file for webgpsmap plugin"""
@@ -134,6 +138,28 @@ class TripleGeo(plugins.Plugin):
         except Exception as e:
             logging.warning(f"[TripleGeo] Could not create webgps file: {e}")
 
+    def get_gps_coord_with_retry(self, max_attempts=None):
+        """Get GPS coordinates with configurable retry logic"""
+        if max_attempts is None:
+            max_attempts = self.options.get('gps_retry_attempts', 5)
+        
+        retry_delay = self.options.get('gps_retry_delay', 1)
+        
+        for attempt in range(max_attempts):
+            gps_coord = self.get_gps_coord(max_attempts=2)
+            if gps_coord:
+                if attempt > 0:
+                    logging.info(f"[TripleGeo] GPS lock acquired on attempt {attempt + 1}")
+                return gps_coord
+            
+            if attempt < max_attempts - 1:
+                if attempt == 0:
+                    logging.debug(f"[TripleGeo] No GPS lock, retrying {max_attempts - 1} more times...")
+                time.sleep(retry_delay)
+        
+        logging.debug(f"[TripleGeo] Failed to get GPS lock after {max_attempts} attempts")
+        return None
+
     def _upload_to_wigle(self, event):
         """Upload AP data to Wigle.net with rate limiting"""
         if not self.options.get('wigle_upload', True):
@@ -144,12 +170,12 @@ class TripleGeo(plugins.Plugin):
         token = self.options.get('wigle_token', '')
         
         if not user or not token:
-            logging.warning("[TripleGeo] Wigle credentials not set")
+            logging.debug("[TripleGeo] Wigle credentials not set")
             return False
         
         # Check if we have GPS coordinates
         if event.get('lat') == 'N/A' or event.get('lon') == 'N/A':
-            logging.warning("[TripleGeo] No GPS coordinates, skipping Wigle upload")
+            logging.debug("[TripleGeo] No GPS coordinates, skipping Wigle upload")
             return False
         
         # Rate limiting check
@@ -164,7 +190,7 @@ class TripleGeo(plugins.Plugin):
         # Check if we've hit the rate limit
         if self.wigle_upload_count >= max_per_minute:
             wait_time = 60 - (now - self.wigle_upload_window_start)
-            logging.warning(f"[TripleGeo] Wigle rate limit reached, waiting {wait_time:.1f}s")
+            logging.debug(f"[TripleGeo] Wigle rate limit reached, queuing for {wait_time:.1f}s")
             return False
         
         auth = HTTPBasicAuth(user, token)
@@ -192,7 +218,10 @@ class TripleGeo(plugins.Plugin):
         
         # Add frequency if available
         if event.get('frequency') != 'N/A':
-            payload['frequency'] = int(event['frequency'])
+            try:
+                payload['frequency'] = int(event['frequency'])
+            except (ValueError, TypeError):
+                pass
         
         # Add encryption
         if event.get('encryption') != 'N/A':
@@ -203,7 +232,8 @@ class TripleGeo(plugins.Plugin):
             payload['rssi'] = int(event['rssi'])
         
         try:
-            logging.info(f"[TripleGeo] Uploading to Wigle: {event['ssid']} ({event['bssid']})")
+            if self.options.get('debug_logging', False):
+                logging.info(f"[TripleGeo] Uploading to Wigle: {event['ssid']} ({event['bssid']})")
             
             # Apply delay before request
             delay = self.options.get('wigle_delay', 2)
@@ -223,13 +253,13 @@ class TripleGeo(plugins.Plugin):
                 try:
                     response_data = r.json()
                     if response_data.get('success'):
-                        logging.info(f"[TripleGeo] Wigle upload successful: {response_data.get('message', 'OK')}")
+                        logging.info(f"[TripleGeo] Wigle upload successful: {event['bssid']}")
                         return True
                     else:
                         logging.warning(f"[TripleGeo] Wigle upload not successful: {response_data.get('message', 'Unknown error')}")
                         return False
                 except json.JSONDecodeError:
-                    logging.info("[TripleGeo] Wigle upload successful (no JSON response)")
+                    logging.info(f"[TripleGeo] Wigle upload successful: {event['bssid']}")
                     return True
             elif r.status_code == 429:
                 logging.warning("[TripleGeo] Wigle rate limit exceeded (429)")
@@ -338,11 +368,11 @@ class TripleGeo(plugins.Plugin):
             "title": safe_str(title, 256),
             "fields": fields[:25],
             "color": color,
-            "footer": {"text": f"triplegeo v{self.__version__} | HS#{self.handshake_count} | Cache:{event.get('cache_size', 0)} | WebGPS:{'✓' if self.options.get('webgps_compatible') else '✗'} | Wigle:{'✓' if self.options.get('wigle_upload') else '✗'}"}
+            "footer": {"text": f"triplegeo v{self.__version__} | HS#{self.handshake_count} | Cache:{event.get('cache_size', 0)} | Wigle:{len(self.wigle_uploaded_macs)} uploaded"}
         }
 
     def on_loaded(self):
-        logging.info("[TripleGeo] Loading TripleGeo plugin...")
+        logging.info("[TripleGeo] Loading TripleGeo Wardriving plugin...")
         
         config_loaded = False
         try:
@@ -385,7 +415,9 @@ class TripleGeo(plugins.Plugin):
         logging.info(f"[TripleGeo] Plugin enabled: {self.options.get('enabled', False)}")
         logging.info(f"[TripleGeo] Discord webhook: {'Yes' if webhook_url else 'No'}")
         logging.info(f"[TripleGeo] Wigle upload: {'Enabled' if self.options.get('wigle_upload') else 'Disabled'}")
+        logging.info(f"[TripleGeo] Wigle wardriving mode: {'ON (all APs)' if self.options.get('wigle_upload_all_aps') else 'OFF (handshakes only)'}")
         logging.info(f"[TripleGeo] Wigle credentials: {'Set' if self.options.get('wigle_user') and self.options.get('wigle_token') else 'Not set'}")
+        logging.info(f"[TripleGeo] GPS retry attempts: {self.options.get('gps_retry_attempts', 5)}")
         logging.info(f"[TripleGeo] Debug logging: {self.options.get('debug_logging', False)}")
         logging.info(f"[TripleGeo] WebGPS compatibility: {self.options.get('webgps_compatible', True)}")
 
@@ -396,7 +428,7 @@ class TripleGeo(plugins.Plugin):
         logging.info(f"[TripleGeo] TripleGeo plugin loaded successfully")
 
     def on_unfiltered_ap_list(self, agent, data):
-        """Enhanced AP data caching with better logging"""
+        """Enhanced AP data caching with Wigle upload for all detected APs"""
         if not self.options.get("enabled", False):
             return
 
@@ -404,10 +436,11 @@ class TripleGeo(plugins.Plugin):
             logging.debug("[TripleGeo] Invalid or empty AP data received")
             return
 
+        # Get GPS coordinates with retry
         gps_coord = None
         if HAS_GPSD and self.gps_session:
             try:
-                gps_coord = self.get_gps_coord(max_attempts=2)
+                gps_coord = self.get_gps_coord_with_retry(max_attempts=self.options.get('gps_retry_attempts', 5))
                 if gps_coord:
                     logging.debug(f"[TripleGeo] GPS coordinates: {gps_coord}")
             except Exception as e:
@@ -420,6 +453,7 @@ class TripleGeo(plugins.Plugin):
 
         cached_count = 0
         aps_with_data = 0
+        wigle_uploaded_count = 0
         
         with self.ap_cache_lock:
             for ap in data['wifi']['aps']:
@@ -437,6 +471,7 @@ class TripleGeo(plugins.Plugin):
                 
                 ap_data = {
                     'ssid': ssid,
+                    'bssid': ap_mac,
                     'rssi': rssi if rssi is not None else "N/A",
                     'channel': channel if channel is not None else "N/A",
                     'encryption': encryption,
@@ -445,7 +480,10 @@ class TripleGeo(plugins.Plugin):
                     'vendor': self._lookup_oui_vendor(ap_mac),
                     'timestamp': now,
                     'gps_coord': gps_coord,
-                    'clients': ap.get('clients', [])
+                    'clients': ap.get('clients', []),
+                    'lat': gps_coord[0] if gps_coord else "N/A",
+                    'lon': gps_coord[1] if gps_coord else "N/A",
+                    'altitude': gps_coord[2] if gps_coord and len(gps_coord) > 2 else "N/A"
                 }
                 
                 self.ap_cache[ap_mac] = ap_data
@@ -453,9 +491,20 @@ class TripleGeo(plugins.Plugin):
                 
                 if rssi is not None and channel is not None:
                     aps_with_data += 1
+                
+                # Upload to Wigle if enabled, has GPS, and not already uploaded
+                if (self.options.get('wigle_upload_all_aps', True) and 
+                    self.options.get('wigle_upload', True) and 
+                    gps_coord and 
+                    ap_mac not in self.wigle_uploaded_macs):
+                    
+                    if self._upload_to_wigle(ap_data):
+                        self.wigle_uploaded_macs.add(ap_mac)
+                        wigle_uploaded_count += 1
 
         if cached_count > 0:
-            logging.info(f"[TripleGeo] Cached {cached_count} APs ({aps_with_data} with signal data), total cache: {len(self.ap_cache)}")
+            upload_status = f", uploaded {wigle_uploaded_count} to Wigle" if wigle_uploaded_count > 0 else ""
+            logging.info(f"[TripleGeo] Cached {cached_count} APs ({aps_with_data} with signal data){upload_status}, total cache: {len(self.ap_cache)}")
 
     def on_handshake(self, agent, filename, ap, client):
         """Enhanced handshake processing with improved data extraction, webgps file creation, and Wigle upload"""
@@ -474,10 +523,11 @@ class TripleGeo(plugins.Plugin):
             elif isinstance(ap, dict):
                 logging.debug(f"[TripleGeo] AP dict contents: {ap}")
 
+        # Get GPS with retry
         gps_coord = None
         if HAS_GPSD and self.gps_session:
             try:
-                gps_coord = self.get_gps_coord(max_attempts=2)
+                gps_coord = self.get_gps_coord_with_retry(max_attempts=self.options.get('gps_retry_attempts', 5))
                 if gps_coord:
                     logging.info(f"[TripleGeo] Current GPS: {gps_coord}")
             except Exception as e:
@@ -532,7 +582,6 @@ class TripleGeo(plugins.Plugin):
                         logging.info(f"[TripleGeo] Cached data: RSSI={cached_ap.get('rssi')}, CH={cached_ap.get('channel')}, ENC={cached_ap.get('encryption')}")
                     else:
                         logging.warning(f"[TripleGeo] No cached data for {ap_mac}")
-                        logging.info(f"[TripleGeo] Available cache keys: {list(self.ap_cache.keys())[:10]}...")
             except Exception as e:
                 logging.error(f"[TripleGeo] Cache access error: {e}")
 
@@ -666,12 +715,17 @@ class TripleGeo(plugins.Plugin):
         except Exception as e:
             logging.warning(f"[TripleGeo] Error saving pending: {e}")
 
-        # Upload to Wigle
+        # Upload to Wigle (if not already uploaded during scan)
         wigle_success = False
-        if self.options.get('wigle_upload', True):
-            logging.info(f"[TripleGeo] Attempting Wigle upload for {ap_ssid or ssid}")
+        if self.options.get('wigle_upload', True) and ap_mac not in self.wigle_uploaded_macs:
+            logging.info(f"[TripleGeo] Attempting Wigle upload for handshake: {ap_ssid or ssid}")
             wigle_success = self._upload_to_wigle(entry)
+            if wigle_success:
+                self.wigle_uploaded_macs.add(ap_mac)
             entry['wigle_uploaded'] = wigle_success
+        elif ap_mac in self.wigle_uploaded_macs:
+            entry['wigle_uploaded'] = True
+            logging.info(f"[TripleGeo] AP already uploaded to Wigle during scan")
         
         # Send to Discord
         logging.info(f"[TripleGeo] Sending handshake to Discord: {ap_ssid or ssid}")
@@ -889,7 +943,7 @@ class TripleGeo(plugins.Plugin):
             self._save_pending()
             if hasattr(self, 'gps_session') and self.gps_session:
                 self.gps_session.close()
-            logging.info("[TripleGeo] Plugin cleanup completed")
+            logging.info(f"[TripleGeo] Plugin cleanup completed. Total Wigle uploads: {len(self.wigle_uploaded_macs)}")
         except Exception as e:
             logging.warning(f"[TripleGeo] Error during cleanup: {e}")
         

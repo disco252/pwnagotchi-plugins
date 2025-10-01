@@ -60,11 +60,11 @@ except ImportError:
 
 class TripleGeo(plugins.Plugin):
     __author__ = "disco252"
-    __version__ = "1.8.2"
+    __version__ = "1.8.3"  # Incremented for webgps compatibility
     __license__ = "GPL3"
     __description__ = (
         "Enhanced geolocation and Discord notifications for Pwnagotchi handshake captures."
-        "AP data collection and correlation for Discord reporting."
+        "AP data collection and correlation for Discord reporting. Now with webgpsmap compatibility."
     )
     __name__ = "triplegeo"
     __defaults__ = {
@@ -84,6 +84,7 @@ class TripleGeo(plugins.Plugin):
         "oui_db_path": "/usr/local/share/pwnagotchi/ieee_oui.txt",
         "cache_expire_minutes": 60,  # Increased cache time
         "debug_logging": True,  # Enable debug logging
+        "webgps_compatible": True,  # Enable webgpsmap compatibility
     }
 
     def __init__(self):
@@ -98,6 +99,40 @@ class TripleGeo(plugins.Plugin):
         self.ap_cache = {}
         self.ap_cache_lock = threading.Lock()
         self.handshake_count = 0
+
+    def _create_webgps_file(self, filename, gps_coord):
+        """Create webgps-compatible .gps.json file for webgpsmap plugin"""
+        if not self.options.get('webgps_compatible', True):
+            return
+            
+        if not gps_coord or len(gps_coord) < 2:
+            logging.debug("[TripleGeo] No GPS coordinates available for webgps file")
+            return
+            
+        try:
+            # Create .gps.json filename (webgpsmap expects this format)
+            gps_file = filename.replace('.pcap', '.gps.json')
+            
+            # Build webgps-compatible data structure
+            webgps_data = {
+                'lat': float(gps_coord[0]),
+                'lng': float(gps_coord[1]),  # webgpsmap uses 'lng', not 'lon'
+                'accuracy': 10.0,  # Default accuracy in meters
+                'timestamp': time.time()
+            }
+            
+            # Add altitude if available
+            if len(gps_coord) > 2 and gps_coord[2] is not None:
+                webgps_data['altitude'] = float(gps_coord[2])
+            
+            # Write the webgps file
+            with open(gps_file, 'w') as f:
+                json.dump(webgps_data, f)
+                
+            logging.info(f"[TripleGeo] Created webgps file: {os.path.basename(gps_file)}")
+            
+        except Exception as e:
+            logging.warning(f"[TripleGeo] Could not create webgps file: {e}")
 
     def _load_oui_db(self, db_path):
         oui_dict = {}
@@ -193,7 +228,7 @@ class TripleGeo(plugins.Plugin):
             "title": safe_str(title, 256),
             "fields": fields[:25],  # Discord max 25 fields
             "color": color,
-            "footer": {"text": f"triplegeo v{self.__version__} | Handshake #{self.handshake_count} | Cache: {event.get('cache_size', 0)} APs"}
+            "footer": {"text": f"triplegeo v{self.__version__} | Handshake #{self.handshake_count} | Cache: {event.get('cache_size', 0)} APs | WebGPS: {'✓' if self.options.get('webgps_compatible', True) else '✗'}"}
         }
 
     def on_loaded(self):
@@ -242,6 +277,7 @@ class TripleGeo(plugins.Plugin):
         logging.info(f"[TripleGeo] Plugin enabled: {self.options.get('enabled', False)}")
         logging.info(f"[TripleGeo] Discord webhook: {'Yes' if webhook_url else 'No'}")
         logging.info(f"[TripleGeo] Debug logging: {self.options.get('debug_logging', False)}")
+        logging.info(f"[TripleGeo] WebGPS compatibility: {self.options.get('webgps_compatible', True)}")
         if webhook_url:
             logging.info(f"[TripleGeo] Webhook URL: {webhook_url[:50]}...")
 
@@ -321,7 +357,7 @@ class TripleGeo(plugins.Plugin):
             logging.info(f"[TripleGeo] Cached {cached_count} APs ({aps_with_data} with signal data), total cache: {len(self.ap_cache)}")
 
     def on_handshake(self, agent, filename, ap, client):
-        """Enhanced handshake processing with improved data extraction"""
+        """Enhanced handshake processing with improved data extraction and webgps file creation"""
         if not self.options.get("enabled", False):
             logging.info("[TripleGeo] Plugin disabled, skipping handshake")
             return
@@ -520,8 +556,9 @@ class TripleGeo(plugins.Plugin):
         logging.info(f"[TripleGeo]   Vendor: {vendor}")
         logging.info(f"[TripleGeo]   Data source: {'Cache' if from_cache else 'Direct'}")
 
-        # Save GPS coordinates to file if available
+        # Save GPS coordinates to files if available
         if gps_coord:
+            # Save triplegeo format
             coord_file = filename.replace(".pcap", ".triplegeo.coord.json")
             coord_data = {
                 "coord": {"lat": gps_coord[0], "lon": gps_coord[1]},
@@ -530,10 +567,15 @@ class TripleGeo(plugins.Plugin):
             }
             if len(gps_coord) > 2:
                 coord_data["coord"]["altitude"] = gps_coord[2]
+                
             try:
                 with open(coord_file, "w") as f:
                     json.dump(coord_data, f)
                 logging.info(f"[TripleGeo] Saved coordinates to {os.path.basename(coord_file)}")
+                
+                # CREATE WEBGPS COMPATIBLE FILE
+                self._create_webgps_file(filename, gps_coord)
+                
             except Exception as e:
                 logging.warning(f"[TripleGeo] Could not save coord file: {e}")
 
@@ -745,7 +787,8 @@ class TripleGeo(plugins.Plugin):
         hd = self.options.get("handshake_dir", "/home/pi/handshakes")
         patterns = [
             os.path.join(hd, "*.triplegeo.coord.json"),
-            os.path.join(hd, "*.coord.json")
+            os.path.join(hd, "*.coord.json"),
+            os.path.join(hd, "*.gps.json")  # Include webgps files
         ]
         files = []
         for pattern in patterns:
@@ -756,6 +799,11 @@ class TripleGeo(plugins.Plugin):
         
         if files:
             logging.info(f"[TripleGeo] Found {len(files)} existing coordinate files")
+            
+            # Count different file types
+            triplegeo_files = len([f for f in files if '.triplegeo.coord.json' in f])
+            webgps_files = len([f for f in files if '.gps.json' in f and '.triplegeo.coord.json' not in f])
+            logging.info(f"[TripleGeo] TripleGeo files: {triplegeo_files}, WebGPS files: {webgps_files}")
 
     def on_unload(self, ui):
         """Cleanup when plugin unloads"""

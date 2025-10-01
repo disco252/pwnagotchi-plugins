@@ -67,7 +67,6 @@ class TripleGeo(plugins.Plugin):
     __description__ = (
         "Enhanced geolocation and Discord notifications for Pwnagotchi handshake captures. "
         "Full wardriving mode with automatic Wigle.net uploads for all detected APs. "
-        "Includes webgpsmap compatibility and GPS retry logic."
     )
     __name__ = "triplegeo"
     __defaults__ = {

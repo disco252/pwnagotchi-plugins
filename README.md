@@ -19,7 +19,7 @@ sudo wget https://raw.githubusercontent.com/YOUR_REPO/triplegeo.py \
 sudo apt update
 sudo apt install gpsd gpsd-clients
 
-# 3. Download OUI database (optional)
+# 3. Download OUI database
 sudo wget http://standards-oui.ieee.org/oui/oui.txt \
   -O /usr/local/share/pwnagotchi/ieee_oui.txt
 
@@ -83,6 +83,8 @@ ble_wardrive.py will scan on it's own loop, below is an interval you can set. It
 This does not interfere with any bluetooth tether. Note: This script in it's current state does not invoke the WiFi - Google Geolocation API is incomplete, however it functions via GPSD with a GPS dongle. Please sure in config.toml, that beettercap.silence = [] does not incclude ble.device.new or ble.device.lost. 
 
 sudo wget https://standards-oui.ieee.org/oui/oui.txt -O /usr/local/share/pwnagotchi/ieee_oui.txt
+
+sudo wget -O /usr/local/share/pwnagotchi/bluetooth_company_ids.json   https://raw.githubusercontent.com/NordicSemiconductor/bluetooth-numbers-database/master/v1/company_ids.json        
 
 # If you are running into issues with your bluetooth tether not reconnecting upon boot (since triplegeo.py and my other ones call for bluetooth/internet connect)<br>
 sudo apt update<br>

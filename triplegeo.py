@@ -6,9 +6,11 @@ import time
 import threading
 import glob
 import re
-import uuid
+import csv
+import io
 import pwnagotchi.plugins as plugins
 from requests.auth import HTTPBasicAuth
+from datetime import datetime
 
 def parse_config_directly():
     config = {}
@@ -62,11 +64,11 @@ except ImportError:
 
 class TripleGeo(plugins.Plugin):
     __author__ = "disco252"
-    __version__ = "1.9" 
+    __version__ = "2.0.0"  # Major version for CSV upload support
     __license__ = "GPL3"
     __description__ = (
         "Enhanced geolocation and Discord notifications for Pwnagotchi handshake captures. "
-        "Full wardriving mode with automatic Wigle.net uploads for all detected APs. "
+        "Full wardriving mode with automatic Wigle.net CSV uploads for all detected APs."
     )
     __name__ = "triplegeo"
     __defaults__ = {
@@ -78,18 +80,19 @@ class TripleGeo(plugins.Plugin):
         "handshake_dir": "/home/pi/handshakes",
         "processed_file": "/root/.triplegeo_processed",
         "pending_file": "/root/.triplegeo_pending",
-        "wigle_delay": 2,
-        "max_wigle_per_minute": 10,
+        "wigle_csv_file": "/root/.triplegeo_wigle.csv",
         "wigle_upload": True,
-        "wigle_upload_all_aps": True,  
+        "wigle_upload_all_aps": True,
+        "wigle_batch_size": 50,  # Upload every N networks
+        "wigle_upload_interval": 300,  # Or every N seconds
         "global_log_file": "/root/triplegeo_globalaplog.jsonl",
         "discord_webhook_url": "",
         "oui_db_path": "/usr/local/share/pwnagotchi/ieee_oui.txt",
         "cache_expire_minutes": 60,
         "debug_logging": True,
         "webgps_compatible": True,
-        "gps_retry_attempts": 5,  
-        "gps_retry_delay": 1,   
+        "gps_retry_attempts": 5,
+        "gps_retry_delay": 1,
     }
 
     def __init__(self):
@@ -104,9 +107,11 @@ class TripleGeo(plugins.Plugin):
         self.ap_cache = {}
         self.ap_cache_lock = threading.Lock()
         self.handshake_count = 0
+        # Wigle CSV buffer
+        self.wigle_networks = []
+        self.wigle_networks_lock = threading.Lock()
+        self.wigle_last_upload = time.time()
         self.wigle_upload_count = 0
-        self.wigle_upload_window_start = time.time()
-        self.wigle_uploaded_macs = set()
 
     def _create_webgps_file(self, filename, gps_coord):
         """Create webgps-compatible .gps.json file for webgpsmap plugin"""
@@ -159,8 +164,80 @@ class TripleGeo(plugins.Plugin):
         logging.debug(f"[TripleGeo] Failed to get GPS lock after {max_attempts} attempts")
         return None
 
-    def _upload_to_wigle(self, event):
-        """Upload AP data to Wigle.net with rate limiting"""
+    def _add_network_to_wigle_csv(self, network_data):
+        """Add network to Wigle CSV buffer"""
+        with self.wigle_networks_lock:
+            self.wigle_networks.append(network_data)
+            
+        # Check if we should upload
+        should_upload = False
+        batch_size = self.options.get('wigle_batch_size', 50)
+        upload_interval = self.options.get('wigle_upload_interval', 300)
+        
+        with self.wigle_networks_lock:
+            network_count = len(self.wigle_networks)
+            time_since_upload = time.time() - self.wigle_last_upload
+            
+            if network_count >= batch_size:
+                should_upload = True
+                logging.info(f"[TripleGeo] Batch size reached ({network_count} networks), triggering upload")
+            elif time_since_upload >= upload_interval and network_count > 0:
+                should_upload = True
+                logging.info(f"[TripleGeo] Upload interval reached ({time_since_upload:.0f}s), uploading {network_count} networks")
+        
+        if should_upload:
+            threading.Thread(target=self._upload_wigle_csv, daemon=True).start()
+
+    def _generate_wigle_csv(self, networks):
+        """Generate Wigle-formatted CSV from network list"""
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Wigle CSV header
+        writer.writerow([
+            'MAC', 'SSID', 'AuthMode', 'FirstSeen', 'Channel', 'RSSI',
+            'CurrentLatitude', 'CurrentLongitude', 'AltitudeMeters', 'AccuracyMeters', 'Type'
+        ])
+        
+        for net in networks:
+            # Format timestamp for Wigle
+            try:
+                dt = datetime.fromtimestamp(net['timestamp'])
+                first_seen = dt.strftime('%Y-%m-%d %H:%M:%S')
+            except:
+                first_seen = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            # Map encryption type to Wigle format
+            auth_mode = net.get('encryption', 'Open')
+            if 'WPA3' in auth_mode:
+                auth_mode = 'WPA3'
+            elif 'WPA2' in auth_mode:
+                auth_mode = 'WPA2'
+            elif 'WPA' in auth_mode:
+                auth_mode = 'WPA'
+            elif 'WEP' in auth_mode:
+                auth_mode = 'WEP'
+            else:
+                auth_mode = 'Open'
+            
+            writer.writerow([
+                net['bssid'].replace(':', ''),  # MAC without colons
+                net['ssid'] or '',
+                auth_mode,
+                first_seen,
+                net.get('channel', ''),
+                net.get('rssi', ''),
+                net.get('lat', ''),
+                net.get('lon', ''),
+                net.get('altitude', 0),
+                10,  # Default accuracy
+                'WIFI'
+            ])
+        
+        return output.getvalue()
+
+    def _upload_wigle_csv(self):
+        """Upload CSV file to Wigle.net"""
         if not self.options.get('wigle_upload', True):
             logging.debug("[TripleGeo] Wigle upload disabled")
             return False
@@ -169,109 +246,87 @@ class TripleGeo(plugins.Plugin):
         token = self.options.get('wigle_token', '')
         
         if not user or not token:
-            logging.debug("[TripleGeo] Wigle credentials not set")
+            logging.warning("[TripleGeo] Wigle credentials not set")
             return False
         
-        # Check if we have GPS coordinates
-        if event.get('lat') == 'N/A' or event.get('lon') == 'N/A':
-            logging.debug("[TripleGeo] No GPS coordinates, skipping Wigle upload")
-            return False
-        
-        # Rate limiting check
-        now = time.time()
-        max_per_minute = self.options.get('max_wigle_per_minute', 10)
-        
-        # Reset counter if we're in a new time window
-        if now - self.wigle_upload_window_start >= 60:
-            self.wigle_upload_count = 0
-            self.wigle_upload_window_start = now
-        
-        # Check if we've hit the rate limit
-        if self.wigle_upload_count >= max_per_minute:
-            wait_time = 60 - (now - self.wigle_upload_window_start)
-            logging.debug(f"[TripleGeo] Wigle rate limit reached, queuing for {wait_time:.1f}s")
-            return False
-        
-        auth = HTTPBasicAuth(user, token)
-        
-        # Build payload according to Wigle API v2 spec
-        payload = {
-            'netid': event['bssid'].replace(':', ''),
-            'ssid': event['ssid'],
-            'lastupdt': int(event['timestamp']),
-            'transid': str(uuid.uuid4()),
-            'gps_sd': 'wgs84',
-            'qos': '0',
-            'type': 'WIFI',
-        }
-        
-        # Add GPS coordinates
-        try:
-            payload['lat'] = float(event['lat'])
-            payload['lon'] = float(event['lon'])
-            if event.get('altitude') != 'N/A':
-                payload['alt'] = float(event['altitude'])
-        except (ValueError, TypeError) as e:
-            logging.error(f"[TripleGeo] Invalid GPS coordinates for Wigle: {e}")
-            return False
-        
-        # Add frequency if available
-        if event.get('frequency') != 'N/A':
-            try:
-                payload['frequency'] = int(event['frequency'])
-            except (ValueError, TypeError):
-                pass
-        
-        # Add encryption
-        if event.get('encryption') != 'N/A':
-            payload['encryption'] = event['encryption']
-        
-        # Add signal strength if available
-        if event.get('rssi') != 'N/A' and isinstance(event['rssi'], (int, float)):
-            payload['rssi'] = int(event['rssi'])
-        
-        try:
-            if self.options.get('debug_logging', False):
-                logging.info(f"[TripleGeo] Uploading to Wigle: {event['ssid']} ({event['bssid']})")
+        # Get networks to upload
+        with self.wigle_networks_lock:
+            if not self.wigle_networks:
+                logging.debug("[TripleGeo] No networks to upload")
+                return False
             
-            # Apply delay before request
-            delay = self.options.get('wigle_delay', 2)
-            if delay > 0:
-                time.sleep(delay)
+            networks_to_upload = self.wigle_networks.copy()
+            self.wigle_networks.clear()
+            self.wigle_last_upload = time.time()
+        
+        try:
+            # Generate CSV
+            csv_data = self._generate_wigle_csv(networks_to_upload)
+            
+            # Save CSV locally for backup
+            csv_file = self.options.get('wigle_csv_file', '/root/.triplegeo_wigle.csv')
+            try:
+                with open(csv_file, 'w') as f:
+                    f.write(csv_data)
+                logging.debug(f"[TripleGeo] Saved CSV backup to {csv_file}")
+            except Exception as e:
+                logging.warning(f"[TripleGeo] Could not save CSV backup: {e}")
+            
+            # Upload to Wigle
+            logging.info(f"[TripleGeo] Uploading {len(networks_to_upload)} networks to Wigle...")
+            
+            files = {
+                'file': ('pwnagotchi.csv', csv_data, 'text/csv')
+            }
+            
+            data = {
+                'donate': 'false'
+            }
+            
+            auth = HTTPBasicAuth(user, token)
             
             r = requests.post(
-                'https://api.wigle.net/api/v2/network/add',
+                'https://api.wigle.net/api/v2/file/upload',
                 auth=auth,
-                data=payload,
-                timeout=15
+                files=files,
+                data=data,
+                timeout=30
             )
-            
-            self.wigle_upload_count += 1
             
             if r.status_code == 200:
                 try:
                     response_data = r.json()
                     if response_data.get('success'):
-                        logging.info(f"[TripleGeo] Wigle upload successful: {event['bssid']}")
+                        self.wigle_upload_count += len(networks_to_upload)
+                        logging.info(f"[TripleGeo] Wigle upload successful! Total uploaded: {self.wigle_upload_count}")
                         return True
                     else:
-                        logging.warning(f"[TripleGeo] Wigle upload not successful: {response_data.get('message', 'Unknown error')}")
+                        error_msg = response_data.get('message', 'Unknown error')
+                        logging.error(f"[TripleGeo] Wigle upload failed: {error_msg}")
+                        # Re-add networks to queue
+                        with self.wigle_networks_lock:
+                            self.wigle_networks.extend(networks_to_upload)
                         return False
                 except json.JSONDecodeError:
-                    logging.info(f"[TripleGeo] Wigle upload successful: {event['bssid']}")
+                    logging.info(f"[TripleGeo] Wigle upload successful (no JSON response)")
+                    self.wigle_upload_count += len(networks_to_upload)
                     return True
-            elif r.status_code == 429:
-                logging.warning("[TripleGeo] Wigle rate limit exceeded (429)")
-                return False
             else:
                 logging.error(f"[TripleGeo] Wigle upload failed: {r.status_code} - {r.text}")
+                # Re-add networks to queue
+                with self.wigle_networks_lock:
+                    self.wigle_networks.extend(networks_to_upload)
                 return False
                 
         except requests.exceptions.Timeout:
             logging.error("[TripleGeo] Wigle upload timeout")
+            with self.wigle_networks_lock:
+                self.wigle_networks.extend(networks_to_upload)
             return False
         except Exception as e:
             logging.error(f"[TripleGeo] Wigle exception: {e}")
+            with self.wigle_networks_lock:
+                self.wigle_networks.extend(networks_to_upload)
             return False
 
     def _load_oui_db(self, db_path):
@@ -352,22 +407,19 @@ class TripleGeo(plugins.Plugin):
         cache_status = "Cached" if event.get("from_cache") else "Direct"
         fields.append({"name": "Data Source", "value": cache_status, "inline": True})
         
-        # Add Wigle upload status if attempted
-        if event.get("wigle_uploaded") is not None:
-            wigle_status = "✓ Uploaded" if event["wigle_uploaded"] else "✗ Failed"
-            fields.append({"name": "Wigle", "value": wigle_status, "inline": True})
-        
         color = 0x00ff00
         if event.get('rssi') == 'N/A' or event.get('channel') == 'N/A':
             color = 0xff6600
         if lat == 'N/A' or lon == 'N/A':
             color = 0xff9900
         
+        wigle_queued = len(self.wigle_networks) if hasattr(self, 'wigle_networks') else 0
+        
         return {
             "title": safe_str(title, 256),
             "fields": fields[:25],
             "color": color,
-            "footer": {"text": f"triplegeo v{self.__version__} | HS#{self.handshake_count} | Cache:{event.get('cache_size', 0)} | Wigle:{len(self.wigle_uploaded_macs)} uploaded"}
+            "footer": {"text": f"triplegeo v{self.__version__} | HS#{self.handshake_count} | Cache:{event.get('cache_size', 0)} | Wigle:{self.wigle_upload_count} uploaded, {wigle_queued} queued"}
         }
 
     def on_loaded(self):
@@ -415,6 +467,7 @@ class TripleGeo(plugins.Plugin):
         logging.info(f"[TripleGeo] Discord webhook: {'Yes' if webhook_url else 'No'}")
         logging.info(f"[TripleGeo] Wigle upload: {'Enabled' if self.options.get('wigle_upload') else 'Disabled'}")
         logging.info(f"[TripleGeo] Wigle wardriving mode: {'ON (all APs)' if self.options.get('wigle_upload_all_aps') else 'OFF (handshakes only)'}")
+        logging.info(f"[TripleGeo] Wigle batch size: {self.options.get('wigle_batch_size', 50)}")
         logging.info(f"[TripleGeo] Wigle credentials: {'Set' if self.options.get('wigle_user') and self.options.get('wigle_token') else 'Not set'}")
         logging.info(f"[TripleGeo] GPS retry attempts: {self.options.get('gps_retry_attempts', 5)}")
         logging.info(f"[TripleGeo] Debug logging: {self.options.get('debug_logging', False)}")
@@ -427,7 +480,7 @@ class TripleGeo(plugins.Plugin):
         logging.info(f"[TripleGeo] TripleGeo plugin loaded successfully")
 
     def on_unfiltered_ap_list(self, agent, data):
-        """Enhanced AP data caching with Wigle upload for all detected APs"""
+        """Enhanced AP data caching with Wigle CSV batch upload"""
         if not self.options.get("enabled", False):
             return
 
@@ -452,7 +505,7 @@ class TripleGeo(plugins.Plugin):
 
         cached_count = 0
         aps_with_data = 0
-        wigle_uploaded_count = 0
+        wigle_queued_count = 0
         
         with self.ap_cache_lock:
             for ap in data['wifi']['aps']:
@@ -491,22 +544,21 @@ class TripleGeo(plugins.Plugin):
                 if rssi is not None and channel is not None:
                     aps_with_data += 1
                 
-                # Upload to Wigle if enabled, has GPS, and not already uploaded
+                # Add to Wigle CSV queue if enabled and has GPS
                 if (self.options.get('wigle_upload_all_aps', True) and 
                     self.options.get('wigle_upload', True) and 
-                    gps_coord and 
-                    ap_mac not in self.wigle_uploaded_macs):
+                    gps_coord and
+                    ap_data['lat'] != "N/A" and ap_data['lon'] != "N/A"):
                     
-                    if self._upload_to_wigle(ap_data):
-                        self.wigle_uploaded_macs.add(ap_mac)
-                        wigle_uploaded_count += 1
+                    self._add_network_to_wigle_csv(ap_data)
+                    wigle_queued_count += 1
 
         if cached_count > 0:
-            upload_status = f", uploaded {wigle_uploaded_count} to Wigle" if wigle_uploaded_count > 0 else ""
-            logging.info(f"[TripleGeo] Cached {cached_count} APs ({aps_with_data} with signal data){upload_status}, total cache: {len(self.ap_cache)}")
+            queue_status = f", queued {wigle_queued_count} for Wigle" if wigle_queued_count > 0 else ""
+            logging.info(f"[TripleGeo] Cached {cached_count} APs ({aps_with_data} with signal data){queue_status}, total cache: {len(self.ap_cache)}")
 
     def on_handshake(self, agent, filename, ap, client):
-        """Enhanced handshake processing with improved data extraction, webgps file creation, and Wigle upload"""
+        """Enhanced handshake processing with improved data extraction, webgps file creation, and Wigle CSV upload"""
         if not self.options.get("enabled", False):
             logging.info("[TripleGeo] Plugin disabled, skipping handshake")
             return
@@ -714,17 +766,10 @@ class TripleGeo(plugins.Plugin):
         except Exception as e:
             logging.warning(f"[TripleGeo] Error saving pending: {e}")
 
-        # Upload to Wigle (if not already uploaded during scan)
-        wigle_success = False
-        if self.options.get('wigle_upload', True) and ap_mac not in self.wigle_uploaded_macs:
-            logging.info(f"[TripleGeo] Attempting Wigle upload for handshake: {ap_ssid or ssid}")
-            wigle_success = self._upload_to_wigle(entry)
-            if wigle_success:
-                self.wigle_uploaded_macs.add(ap_mac)
-            entry['wigle_uploaded'] = wigle_success
-        elif ap_mac in self.wigle_uploaded_macs:
-            entry['wigle_uploaded'] = True
-            logging.info(f"[TripleGeo] AP already uploaded to Wigle during scan")
+        # Add to Wigle CSV queue if GPS available
+        if self.options.get('wigle_upload', True) and gps_coord:
+            logging.info(f"[TripleGeo] Adding handshake to Wigle queue: {ap_ssid or ssid}")
+            self._add_network_to_wigle_csv(entry)
         
         # Send to Discord
         logging.info(f"[TripleGeo] Sending handshake to Discord: {ap_ssid or ssid}")
@@ -770,7 +815,6 @@ class TripleGeo(plugins.Plugin):
                               f"Channel: {event.get('channel','N/A')}\n"
                               f"Encryption: {event.get('encryption','N/A')}\n"
                               f"Location: {event.get('lat','N/A')},{event.get('lon','N/A')}\n"
-                              f"Wigle: {'✓' if event.get('wigle_uploaded') else '✗'}\n"
                               f"File: {os.path.basename(event.get('handshake_file','unknown'))}"
                 }
                 
@@ -914,35 +958,19 @@ class TripleGeo(plugins.Plugin):
 
         return self._gps_last
 
-    def _report_existing_coords(self):
-        """Report existing coordinate files"""
-        hd = self.options.get("handshake_dir", "/home/pi/handshakes")
-        patterns = [
-            os.path.join(hd, "*.triplegeo.coord.json"),
-            os.path.join(hd, "*.coord.json"),
-            os.path.join(hd, "*.gps.json")
-        ]
-        files = []
-        for pattern in patterns:
-            try:
-                files.extend(glob.glob(pattern))
-            except Exception as e:
-                logging.warning(f"[TripleGeo] Glob error for {pattern}: {e}")
-        
-        if files:
-            logging.info(f"[TripleGeo] Found {len(files)} existing coordinate files")
-            triplegeo_files = len([f for f in files if '.triplegeo.coord.json' in f])
-            webgps_files = len([f for f in files if '.gps.json' in f and '.triplegeo.coord.json' not in f])
-            logging.info(f"[TripleGeo] TripleGeo files: {triplegeo_files}, WebGPS files: {webgps_files}")
-
     def on_unload(self, ui):
         """Cleanup when plugin unloads"""
         try:
+            # Upload any remaining networks
+            if hasattr(self, 'wigle_networks') and self.wigle_networks:
+                logging.info(f"[TripleGeo] Uploading {len(self.wigle_networks)} remaining networks to Wigle...")
+                self._upload_wigle_csv()
+            
             self._save_processed()
             self._save_pending()
             if hasattr(self, 'gps_session') and self.gps_session:
                 self.gps_session.close()
-            logging.info(f"[TripleGeo] Plugin cleanup completed. Total Wigle uploads: {len(self.wigle_uploaded_macs)}")
+            logging.info(f"[TripleGeo] Plugin cleanup completed. Total Wigle uploads: {self.wigle_upload_count}")
         except Exception as e:
             logging.warning(f"[TripleGeo] Error during cleanup: {e}")
         

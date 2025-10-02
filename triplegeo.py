@@ -64,7 +64,7 @@ except ImportError:
 
 class TripleGeo(plugins.Plugin):
     __author__ = "disco252"
-    __version__ = "2.0.0" 
+    __version__ = "2.0.0"  # Major version for CSV upload support
     __license__ = "GPL3"
     __description__ = (
         "Enhanced geolocation and Discord notifications for Pwnagotchi handshake captures. "

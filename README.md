@@ -1,4 +1,4 @@
-triplegeo.py
+triplegeo.py<br>
 This a plugin that determines geolocation of captured WiFi handshakes.
 It will first attempt to get coordinates via an attached GPS dongle, then it will fall back to Google's geolocation API, and finally queries the WiGLE API using BSSID data if the other options aren't available. Ensure there is internet over bluetooth tethering.
 

@@ -64,16 +64,18 @@ except ImportError:
 
 class TripleGeo(plugins.Plugin):
     __author__ = "disco252"
-    __version__ = "2.0.0"  # Major version for CSV upload support
+    __version__ = "3.0.0"
     __license__ = "GPL3"
     __description__ = (
-        "Enhanced geolocation and Discord notifications for Pwnagotchi handshake captures. "
+        "Enhanced geolocation and ntfy notifications for Pwnagotchi handshake captures. "
         "Full wardriving mode with automatic Wigle.net CSV uploads for all detected APs."
     )
     __name__ = "triplegeo"
     __defaults__ = {
         "enabled": False,
         "mode": ["gps", "google", "wigle"],
+        "ntfy_server": "http://localhost:8080",
+        "ntfy_topic": "triplegeo",
         "google_api_key": "",
         "wigle_user": "",
         "wigle_token": "",
@@ -83,10 +85,9 @@ class TripleGeo(plugins.Plugin):
         "wigle_csv_file": "/root/.triplegeo_wigle.csv",
         "wigle_upload": True,
         "wigle_upload_all_aps": True,
-        "wigle_batch_size": 50,  # Upload every N networks
-        "wigle_upload_interval": 300,  # Or every N seconds
+        "wigle_batch_size": 50,
+        "wigle_upload_interval": 300,
         "global_log_file": "/root/triplegeo_globalaplog.jsonl",
-        "discord_webhook_url": "",
         "oui_db_path": "/usr/local/share/pwnagotchi/ieee_oui.txt",
         "cache_expire_minutes": 60,
         "debug_logging": True,
@@ -107,14 +108,12 @@ class TripleGeo(plugins.Plugin):
         self.ap_cache = {}
         self.ap_cache_lock = threading.Lock()
         self.handshake_count = 0
-        # Wigle CSV buffer
         self.wigle_networks = []
         self.wigle_networks_lock = threading.Lock()
         self.wigle_last_upload = time.time()
         self.wigle_upload_count = 0
 
     def _create_webgps_file(self, filename, gps_coord):
-        """Create webgps-compatible .gps.json file for webgpsmap plugin"""
         if not self.options.get('webgps_compatible', True):
             return
             
@@ -143,7 +142,6 @@ class TripleGeo(plugins.Plugin):
             logging.warning(f"[TripleGeo] Could not create webgps file: {e}")
 
     def get_gps_coord_with_retry(self, max_attempts=None):
-        """Get GPS coordinates with configurable retry logic"""
         if max_attempts is None:
             max_attempts = self.options.get('gps_retry_attempts', 5)
         
@@ -165,11 +163,9 @@ class TripleGeo(plugins.Plugin):
         return None
 
     def _add_network_to_wigle_csv(self, network_data):
-        """Add network to Wigle CSV buffer"""
         with self.wigle_networks_lock:
             self.wigle_networks.append(network_data)
             
-        # Check if we should upload
         should_upload = False
         batch_size = self.options.get('wigle_batch_size', 50)
         upload_interval = self.options.get('wigle_upload_interval', 300)
@@ -189,25 +185,21 @@ class TripleGeo(plugins.Plugin):
             threading.Thread(target=self._upload_wigle_csv, daemon=True).start()
 
     def _generate_wigle_csv(self, networks):
-        """Generate Wigle-formatted CSV from network list"""
         output = io.StringIO()
         writer = csv.writer(output)
         
-        # Wigle CSV header
         writer.writerow([
             'MAC', 'SSID', 'AuthMode', 'FirstSeen', 'Channel', 'RSSI',
             'CurrentLatitude', 'CurrentLongitude', 'AltitudeMeters', 'AccuracyMeters', 'Type'
         ])
         
         for net in networks:
-            # Format timestamp for Wigle
             try:
                 dt = datetime.fromtimestamp(net['timestamp'])
                 first_seen = dt.strftime('%Y-%m-%d %H:%M:%S')
             except:
                 first_seen = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
-            # Map encryption type to Wigle format
             auth_mode = net.get('encryption', 'Open')
             if 'WPA3' in auth_mode:
                 auth_mode = 'WPA3'
@@ -221,7 +213,7 @@ class TripleGeo(plugins.Plugin):
                 auth_mode = 'Open'
             
             writer.writerow([
-                net['bssid'].replace(':', ''),  # MAC without colons
+                net['bssid'].replace(':', ''),
                 net['ssid'] or '',
                 auth_mode,
                 first_seen,
@@ -230,14 +222,13 @@ class TripleGeo(plugins.Plugin):
                 net.get('lat', ''),
                 net.get('lon', ''),
                 net.get('altitude', 0),
-                10,  # Default accuracy
+                10,
                 'WIFI'
             ])
         
         return output.getvalue()
 
     def _upload_wigle_csv(self):
-        """Upload CSV file to Wigle.net"""
         if not self.options.get('wigle_upload', True):
             logging.debug("[TripleGeo] Wigle upload disabled")
             return False
@@ -249,7 +240,6 @@ class TripleGeo(plugins.Plugin):
             logging.warning("[TripleGeo] Wigle credentials not set")
             return False
         
-        # Get networks to upload
         with self.wigle_networks_lock:
             if not self.wigle_networks:
                 logging.debug("[TripleGeo] No networks to upload")
@@ -260,10 +250,8 @@ class TripleGeo(plugins.Plugin):
             self.wigle_last_upload = time.time()
         
         try:
-            # Generate CSV
             csv_data = self._generate_wigle_csv(networks_to_upload)
             
-            # Save CSV locally for backup
             csv_file = self.options.get('wigle_csv_file', '/root/.triplegeo_wigle.csv')
             try:
                 with open(csv_file, 'w') as f:
@@ -272,7 +260,6 @@ class TripleGeo(plugins.Plugin):
             except Exception as e:
                 logging.warning(f"[TripleGeo] Could not save CSV backup: {e}")
             
-            # Upload to Wigle
             logging.info(f"[TripleGeo] Uploading {len(networks_to_upload)} networks to Wigle...")
             
             files = {
@@ -303,7 +290,6 @@ class TripleGeo(plugins.Plugin):
                     else:
                         error_msg = response_data.get('message', 'Unknown error')
                         logging.error(f"[TripleGeo] Wigle upload failed: {error_msg}")
-                        # Re-add networks to queue
                         with self.wigle_networks_lock:
                             self.wigle_networks.extend(networks_to_upload)
                         return False
@@ -313,7 +299,6 @@ class TripleGeo(plugins.Plugin):
                     return True
             else:
                 logging.error(f"[TripleGeo] Wigle upload failed: {r.status_code} - {r.text}")
-                # Re-add networks to queue
                 with self.wigle_networks_lock:
                     self.wigle_networks.extend(networks_to_upload)
                 return False
@@ -369,58 +354,53 @@ class TripleGeo(plugins.Plugin):
             if expired_keys:
                 logging.info(f"[TripleGeo] Cleaned up {len(expired_keys)} expired AP cache entries")
 
-    def create_embed(self, event, title):
+    def create_notification_message(self, event, title):
         def safe_str(value, maxlen=1024):
             if value is None or value == "N/A": 
                 return "N/A"
             sv = str(value)
             return sv[:maxlen] if len(sv) > maxlen else sv
         
-        fields = [
-            {"name": "SSID", "value": safe_str(event.get("ssid", "Unknown")), "inline": True},
-            {"name": "BSSID", "value": safe_str(event.get("bssid", "Unknown")), "inline": True},
-            {"name": "Client", "value": safe_str(event.get("client", "None")), "inline": True},
-            {"name": "Signal", "value": f"{safe_str(event.get('rssi', 'N/A'))} dBm", "inline": True},
-            {"name": "SNR", "value": f"{safe_str(event.get('snr', 'N/A'))} dB", "inline": True},
-            {"name": "Channel", "value": safe_str(event.get("channel", "N/A")), "inline": True},
-            {"name": "Frequency", "value": f"{safe_str(event.get('frequency', 'N/A'))} MHz", "inline": True},
-            {"name": "Band", "value": safe_str(event.get("band", "unknown")), "inline": True},
-            {"name": "Encryption", "value": safe_str(event.get("encryption", "N/A")), "inline": True},
-            {"name": "Vendor", "value": safe_str(event.get("vendor", "Unknown")), "inline": True},
-        ]
-        
         ts = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(event.get("timestamp", time.time())))
-        fields.append({"name": "Timestamp", "value": ts, "inline": True})
         
         lat = event.get('lat', 'N/A')
         lon = event.get('lon', 'N/A')
         alt = event.get('altitude', 'N/A')
-        location_text = f"Lat: {lat}, Lon: {lon}"
+        location_text = f"{lat}, {lon}"
         if alt != 'N/A':
             location_text += f", Alt: {alt}m"
-        fields.append({"name": "Location", "value": location_text, "inline": True})
         
+        filename = "N/A"
         if event.get("handshake_file"):
             filename = os.path.basename(event["handshake_file"])
-            fields.append({"name": "File", "value": safe_str(filename), "inline": False})
         
         cache_status = "Cached" if event.get("from_cache") else "Direct"
-        fields.append({"name": "Data Source", "value": cache_status, "inline": True})
-        
-        color = 0x00ff00
-        if event.get('rssi') == 'N/A' or event.get('channel') == 'N/A':
-            color = 0xff6600
-        if lat == 'N/A' or lon == 'N/A':
-            color = 0xff9900
-        
         wigle_queued = len(self.wigle_networks) if hasattr(self, 'wigle_networks') else 0
         
-        return {
-            "title": safe_str(title, 256),
-            "fields": fields[:25],
-            "color": color,
-            "footer": {"text": f"triplegeo v{self.__version__} | HS#{self.handshake_count} | Cache:{event.get('cache_size', 0)} | Wigle:{self.wigle_upload_count} uploaded, {wigle_queued} queued"}
-        }
+        message_lines = [
+            f"**{title}**",
+            "",
+            f"**SSID:** {safe_str(event.get('ssid', 'Unknown'))}",
+            f"**BSSID:** {safe_str(event.get('bssid', 'Unknown'))}",
+            f"**Client:** {safe_str(event.get('client', 'None'))}",
+            "",
+            f"**Signal:** {safe_str(event.get('rssi', 'N/A'))} dBm",
+            f"**SNR:** {safe_str(event.get('snr', 'N/A'))} dB",
+            f"**Channel:** {safe_str(event.get('channel', 'N/A'))}",
+            f"**Frequency:** {safe_str(event.get('frequency', 'N/A'))} MHz",
+            f"**Band:** {safe_str(event.get('band', 'unknown'))}",
+            f"**Encryption:** {safe_str(event.get('encryption', 'N/A'))}",
+            f"**Vendor:** {safe_str(event.get('vendor', 'Unknown'))}",
+            "",
+            f"**Location:** {location_text}",
+            f"**Timestamp:** {ts}",
+            f"**File:** {filename}",
+            f"**Data Source:** {cache_status}",
+            "",
+            f"*HS#{self.handshake_count} | Cache:{event.get('cache_size', 0)} | Wigle:{self.wigle_upload_count} uploaded, {wigle_queued} queued*"
+        ]
+        
+        return "\n".join(message_lines)
 
     def on_loaded(self):
         logging.info("[TripleGeo] Loading TripleGeo Wardriving plugin...")
@@ -449,22 +429,26 @@ class TripleGeo(plugins.Plugin):
         if not config_loaded:
             logging.warning("[TripleGeo] Using environment variables and defaults")
             self.options = dict(self.__defaults__)
-            env_webhook = os.environ.get('TRIPLEGEO_DISCORD_WEBHOOK_URL', '')
+            env_server = os.environ.get('TRIPLEGEO_NTFY_SERVER', '')
+            env_topic = os.environ.get('TRIPLEGEO_NTFY_TOPIC', '')
             env_enabled = os.environ.get('TRIPLEGEO_ENABLED', 'false').lower() == 'true'
-            if env_webhook:
-                self.options['discord_webhook_url'] = env_webhook
+            if env_server and env_topic:
+                self.options['ntfy_server'] = env_server
+                self.options['ntfy_topic'] = env_topic
                 self.options['enabled'] = True
-                logging.info("[TripleGeo] Using webhook from environment variable")
+                logging.info("[TripleGeo] Using ntfy config from environment variables")
             elif env_enabled:
                 self.options['enabled'] = True
 
-        webhook_url = self.options.get('discord_webhook_url', '')
-        if webhook_url and not self.options.get('enabled', False):
-            logging.info("[TripleGeo] Auto-enabling plugin since webhook is configured")
+        ntfy_server = self.options.get('ntfy_server', '')
+        ntfy_topic = self.options.get('ntfy_topic', '')
+        if ntfy_server and ntfy_topic and not self.options.get('enabled', False):
+            logging.info("[TripleGeo] Auto-enabling plugin since ntfy is configured")
             self.options['enabled'] = True
 
         logging.info(f"[TripleGeo] Plugin enabled: {self.options.get('enabled', False)}")
-        logging.info(f"[TripleGeo] Discord webhook: {'Yes' if webhook_url else 'No'}")
+        logging.info(f"[TripleGeo] ntfy server: {ntfy_server if ntfy_server else 'Not configured'}")
+        logging.info(f"[TripleGeo] ntfy topic: {ntfy_topic if ntfy_topic else 'Not configured'}")
         logging.info(f"[TripleGeo] Wigle upload: {'Enabled' if self.options.get('wigle_upload') else 'Disabled'}")
         logging.info(f"[TripleGeo] Wigle wardriving mode: {'ON (all APs)' if self.options.get('wigle_upload_all_aps') else 'OFF (handshakes only)'}")
         logging.info(f"[TripleGeo] Wigle batch size: {self.options.get('wigle_batch_size', 50)}")
@@ -480,7 +464,6 @@ class TripleGeo(plugins.Plugin):
         logging.info(f"[TripleGeo] TripleGeo plugin loaded successfully")
 
     def on_unfiltered_ap_list(self, agent, data):
-        """Enhanced AP data caching with Wigle CSV batch upload"""
         if not self.options.get("enabled", False):
             return
 
@@ -488,7 +471,6 @@ class TripleGeo(plugins.Plugin):
             logging.debug("[TripleGeo] Invalid or empty AP data received")
             return
 
-        # Get GPS coordinates with retry
         gps_coord = None
         if HAS_GPSD and self.gps_session:
             try:
@@ -544,7 +526,6 @@ class TripleGeo(plugins.Plugin):
                 if rssi is not None and channel is not None:
                     aps_with_data += 1
                 
-                # Add to Wigle CSV queue if enabled and has GPS
                 if (self.options.get('wigle_upload_all_aps', True) and 
                     self.options.get('wigle_upload', True) and 
                     gps_coord and
@@ -558,7 +539,6 @@ class TripleGeo(plugins.Plugin):
             logging.info(f"[TripleGeo] Cached {cached_count} APs ({aps_with_data} with signal data){queue_status}, total cache: {len(self.ap_cache)}")
 
     def on_handshake(self, agent, filename, ap, client):
-        """Enhanced handshake processing with improved data extraction, webgps file creation, and Wigle CSV upload"""
         if not self.options.get("enabled", False):
             logging.info("[TripleGeo] Plugin disabled, skipping handshake")
             return
@@ -574,7 +554,6 @@ class TripleGeo(plugins.Plugin):
             elif isinstance(ap, dict):
                 logging.debug(f"[TripleGeo] AP dict contents: {ap}")
 
-        # Get GPS with retry
         gps_coord = None
         if HAS_GPSD and self.gps_session:
             try:
@@ -766,68 +745,80 @@ class TripleGeo(plugins.Plugin):
         except Exception as e:
             logging.warning(f"[TripleGeo] Error saving pending: {e}")
 
-        # Add to Wigle CSV queue if GPS available
         if self.options.get('wigle_upload', True) and gps_coord:
             logging.info(f"[TripleGeo] Adding handshake to Wigle queue: {ap_ssid or ssid}")
             self._add_network_to_wigle_csv(entry)
         
-        # Send to Discord
-        logging.info(f"[TripleGeo] Sending handshake to Discord: {ap_ssid or ssid}")
-        success = self.send_discord_webhook(entry, title="New Handshake Captured")
+        logging.info(f"[TripleGeo] Sending handshake to ntfy: {ap_ssid or ssid}")
+        success = self.send_ntfy_notification(entry, title="New Handshake Captured")
         
         if success:
-            logging.info(f"[TripleGeo] Successfully sent handshake #{self.handshake_count} to Discord")
+            logging.info(f"[TripleGeo] Successfully sent handshake #{self.handshake_count} to ntfy")
         else:
-            logging.error(f"[TripleGeo] Failed to send handshake #{self.handshake_count} to Discord")
+            logging.error(f"[TripleGeo] Failed to send handshake #{self.handshake_count} to ntfy")
         
         logging.info(f"[TripleGeo] ============ Handshake #{self.handshake_count} Complete ============")
 
-    def send_discord_webhook(self, event, title="New Handshake"):
-        """Send handshake data to Discord webhook"""
-        url = self.options.get("discord_webhook_url", "")
-        if not url:
-            logging.warning("[TripleGeo] No Discord webhook URL configured")
+    def send_ntfy_notification(self, event, title="New Handshake"):
+        server = self.options.get("ntfy_server", "")
+        topic = self.options.get("ntfy_topic", "")
+        
+        if not server or not topic:
+            logging.warning("[TripleGeo] ntfy server or topic not configured")
             return False
 
         try:
-            embed = self.create_embed(event, title)
-            payload = {"embeds": [embed]}
-
-            logging.info("[TripleGeo] Sending Discord webhook...")
-            r = requests.post(url, json=payload, timeout=15)
+            message = self.create_notification_message(event, title)
             
-            logging.info(f"[TripleGeo] Discord response: {r.status_code}")
-            if r.text:
-                logging.debug(f"[TripleGeo] Discord response text: {r.text}")
+            priority = "4"
+            tags = "tada,lock"
+            
+            if event.get('rssi') == 'N/A' or event.get('channel') == 'N/A':
+                priority = "3"
+                tags = "warning,lock"
+            
+            if event.get('lat') == 'N/A' or event.get('lon') == 'N/A':
+                tags = "warning,lock,round_pushpin"
+            
+            headers = {
+                "Title": f"Handshake: {event.get('ssid', 'Unknown')}",
+                "Priority": priority,
+                "Tags": tags,
+                "Markdown": "yes"
+            }
 
-            if r.status_code in [200, 204]:
-                logging.info("[TripleGeo] Discord webhook delivered successfully")
+            logging.info("[TripleGeo] Sending ntfy notification...")
+            response = requests.post(
+                f"{server}/{topic}",
+                data=message.encode('utf-8'),
+                headers=headers,
+                timeout=15
+            )
+            
+            logging.info(f"[TripleGeo] ntfy response: {response.status_code}")
+            
+            if response.status_code in [200, 204]:
+                response.raise_for_status()
+                logging.info("[TripleGeo] ntfy notification delivered successfully")
                 return True
             else:
-                logging.error(f"[TripleGeo] Discord webhook failed: {r.status_code}")
-                
-                logging.info("[TripleGeo] Attempting simple message fallback...")
-                simple_payload = {
-                    "content": f"**{title}**\n"
-                              f"SSID: {event.get('ssid','Unknown')}\n"
-                              f"BSSID: {event.get('bssid','Unknown')}\n"
-                              f"Signal: {event.get('rssi','N/A')} dBm\n"
-                              f"Channel: {event.get('channel','N/A')}\n"
-                              f"Encryption: {event.get('encryption','N/A')}\n"
-                              f"Location: {event.get('lat','N/A')},{event.get('lon','N/A')}\n"
-                              f"File: {os.path.basename(event.get('handshake_file','unknown'))}"
-                }
-                
-                fallback_r = requests.post(url, json=simple_payload, timeout=10)
-                logging.info(f"[TripleGeo] Fallback result: {fallback_r.status_code}")
-                return fallback_r.status_code in [200, 204]
+                logging.error(f"[TripleGeo] ntfy notification failed: {response.status_code}")
+                return False
 
+        except requests.exceptions.ConnectionError as e:
+            logging.error(f"[TripleGeo] Connection error - ntfy server unreachable or bluetooth tether unavailable: {e}")
+            return False
+        except requests.exceptions.Timeout as e:
+            logging.error(f"[TripleGeo] Request timeout - network issues or bluetooth tether problem: {e}")
+            return False
+        except requests.exceptions.RequestException as e:
+            logging.error(f"[TripleGeo] Failed to send notification: {e}")
+            return False
         except Exception as e:
-            logging.error(f"[TripleGeo] Discord webhook error: {e}")
+            logging.error(f"[TripleGeo] ntfy notification error: {e}")
             return False
 
     def _extract_info_from_filename(self, filename):
-        """Extract SSID and BSSID from handshake filename"""
         shortname = os.path.basename(filename).replace(".pcap", "")
         parts = shortname.split("_")
         ssid = parts[0] if parts else shortname
@@ -844,7 +835,6 @@ class TripleGeo(plugins.Plugin):
         return ssid, bssid
 
     def _calculate_frequency(self, channel):
-        """Calculate frequency from channel number"""
         if channel == "N/A" or channel is None:
             return "N/A"
         try:
@@ -860,7 +850,6 @@ class TripleGeo(plugins.Plugin):
         return "N/A"
 
     def _calculate_band(self, channel):
-        """Calculate band from channel number"""
         if channel == "N/A" or channel is None:
             return "unknown"
         try:
@@ -876,7 +865,6 @@ class TripleGeo(plugins.Plugin):
         return "unknown"
 
     def _load_storage(self):
-        """Load processed handshakes and pending files"""
         pf = self.options["processed_file"]
         self.processed = set()
         if os.path.exists(pf):
@@ -900,7 +888,6 @@ class TripleGeo(plugins.Plugin):
                 logging.warning(f"[TripleGeo] Error loading pending file: {e}")
 
     def _save_processed(self):
-        """Save processed entries to file"""
         try:
             with open(self.options["processed_file"], "w") as f:
                 json.dump(list(self.processed), f)
@@ -908,7 +895,6 @@ class TripleGeo(plugins.Plugin):
             logging.warning(f"[TripleGeo] Error saving processed file: {e}")
 
     def _save_pending(self):
-        """Save pending handshakes"""
         try:
             with open(self.options["pending_file"], "w") as f:
                 json.dump(self.pending, f)
@@ -916,7 +902,6 @@ class TripleGeo(plugins.Plugin):
             logging.warning(f"[TripleGeo] Error saving pending file: {e}")
 
     def _connect_gpsd(self):
-        """Connect to GPS daemon (non-blocking)"""
         if not HAS_GPSD:
             logging.info("[TripleGeo] gpsd module not available, GPS disabled")
             return
@@ -931,7 +916,6 @@ class TripleGeo(plugins.Plugin):
             logging.warning(f"[TripleGeo] gpsd connection failed: {e}")
 
     def get_gps_coord(self, max_attempts=2):
-        """Get GPS coordinates (quick, non-blocking)"""
         if not self.gps_session:
             return self._gps_last
 
@@ -959,9 +943,7 @@ class TripleGeo(plugins.Plugin):
         return self._gps_last
 
     def on_unload(self, ui):
-        """Cleanup when plugin unloads"""
         try:
-            # Upload any remaining networks
             if hasattr(self, 'wigle_networks') and self.wigle_networks:
                 logging.info(f"[TripleGeo] Uploading {len(self.wigle_networks)} remaining networks to Wigle...")
                 self._upload_wigle_csv()

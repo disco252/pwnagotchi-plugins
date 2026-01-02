@@ -42,6 +42,7 @@ sudo systemctl start ntfy
 
 
 3. Install GPS support (optional)
+   
 sudo apt update
 
 sudo apt install gpsd gpsd-clients

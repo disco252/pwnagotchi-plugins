@@ -16,7 +16,7 @@ except ImportError:
 
 class BLEWardrive(plugins.Plugin):
     __author__ = "disco252"
-    __version__ = "1.6"
+    __version__ = "1.7"
     __license__ = "GPL3"
     __description__ = (
         "Bluetooth LE wardriving plugin with GPS, device classification, IEEE OUI lookup, "
@@ -25,7 +25,8 @@ class BLEWardrive(plugins.Plugin):
     __name__ = "ble_wardrive"
     __defaults__ = {
         "enabled": False,
-        "discord_webhook_url": "",
+        "ntfy_server": "http://localhost:8080",
+        "ntfy_topic": "ble_wardrive",
         "scan_interval": 10,
         "scan_duration": 5,
         "use_gpsd": True,
@@ -46,7 +47,6 @@ class BLEWardrive(plugins.Plugin):
         self.bluetooth_company_db = {}
 
     def _load_oui_db(self, db_path):
-        """Load IEEE OUI database"""
         oui_dict = {}
         if not os.path.exists(db_path):
             logging.warning(f"[BLEWardrive] OUI database file not found: {db_path}")
@@ -69,7 +69,6 @@ class BLEWardrive(plugins.Plugin):
         return oui_dict
 
     def _load_bluetooth_company_db(self, db_path):
-        """Load Bluetooth Company Identifier database"""
         company_dict = {}
         if not os.path.exists(db_path):
             logging.warning(f"[BLEWardrive] Bluetooth Company ID database not found: {db_path}")
@@ -79,17 +78,14 @@ class BLEWardrive(plugins.Plugin):
             with open(db_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 
-            # Handle Nordic's JSON format
             if isinstance(data, dict) and 'company_identifiers' in data:
                 for entry in data['company_identifiers']:
                     company_dict[entry['code']] = entry['name']
             elif isinstance(data, list):
-                # Handle list format
                 for entry in data:
                     if isinstance(entry, dict) and 'code' in entry and 'name' in entry:
                         company_dict[entry['code']] = entry['name']
             else:
-                # Handle simple dict format
                 for code, name in data.items():
                     company_dict[int(code)] = name
             
@@ -101,18 +97,15 @@ class BLEWardrive(plugins.Plugin):
         return company_dict
 
     def _download_bluetooth_company_db(self):
-        """Download Bluetooth Company ID database from Nordic Semiconductor"""
         db_path = self.options["bluetooth_company_db_path"]
         
         try:
-            # Use Nordic's maintained database
             url = "https://raw.githubusercontent.com/NordicSemiconductor/bluetooth-numbers-database/master/v1/company_identifiers.json"
             
             logging.info("[BLEWardrive] Downloading Bluetooth Company ID database...")
             response = requests.get(url, timeout=30)
             response.raise_for_status()
             
-            # Ensure directory exists
             os.makedirs(os.path.dirname(db_path), exist_ok=True)
             
             with open(db_path, 'w', encoding='utf-8') as f:
@@ -126,19 +119,16 @@ class BLEWardrive(plugins.Plugin):
             return False
 
     def _lookup_oui_vendor(self, mac_addr):
-        """Lookup MAC address vendor from IEEE OUI database"""
         if not mac_addr:
             return "Unknown"
         oui = mac_addr.replace(":", "").replace("-", "").upper()[:6]
         return self.oui_db.get(oui, "Unknown")
 
     def _lookup_bluetooth_vendor(self, manufacturer_data):
-        """Extract and lookup Bluetooth company from manufacturer data"""
         if not manufacturer_data or len(manufacturer_data) < 2:
             return "Unknown", None
         
         try:
-            # Extract company ID (little-endian, first 2 bytes)
             company_id = int.from_bytes(manufacturer_data[:2], 'little')
             company_name = self.bluetooth_company_db.get(company_id, f"Unknown (0x{company_id:04X})")
             proprietary_data = manufacturer_data[2:] if len(manufacturer_data) > 2 else None
@@ -148,19 +138,15 @@ class BLEWardrive(plugins.Plugin):
             return "Unknown", None
 
     def _format_manufacturer_data(self, manufacturer_data_dict):
-        """Format manufacturer data with company name translation"""
         if not manufacturer_data_dict:
             return "None"
         
         formatted_entries = []
         for company_id, data in manufacturer_data_dict.items():
-            # Get company name from our database
             company_name = self.bluetooth_company_db.get(company_id, f"Unknown (0x{company_id:04X})")
             
-            # Format the data
             if isinstance(data, (bytes, bytearray)):
                 data_hex = data.hex().upper()
-                # Show first few bytes for readability
                 if len(data_hex) > 16:
                     data_display = f"{data_hex[:16]}... ({len(data)} bytes)"
                 else:
@@ -173,32 +159,26 @@ class BLEWardrive(plugins.Plugin):
         return "; ".join(formatted_entries)
 
     def on_loaded(self):
-        """Plugin initialization"""
         for k, v in self.__defaults__.items():
             self.options.setdefault(k, v)
             
-        # Load IEEE OUI database
         self.oui_db = self._load_oui_db(self.options["oui_db_path"])
         
-        # Load or download Bluetooth Company ID database
         bluetooth_db_path = self.options["bluetooth_company_db_path"]
         if not os.path.exists(bluetooth_db_path) and self.options.get("auto_download_databases", True):
             self._download_bluetooth_company_db()
         
         self.bluetooth_company_db = self._load_bluetooth_company_db(bluetooth_db_path)
         
-        # Connect to GPSd if enabled
         if self.options["use_gpsd"] and HAS_GPSD:
             self._connect_gpsd()
             
         logging.info(f"[BLEWardrive] Loaded; GPSd={bool(self.gps_session)}; "
                     f"OUIs={len(self.oui_db)}; BT Companies={len(self.bluetooth_company_db)}")
         
-        # Start BLE scanning thread
         threading.Thread(target=self._ble_loop, daemon=True).start()
 
     def _connect_gpsd(self):
-        """Connect to GPS daemon"""
         try:
             self.gps_session = gps.gps()
             self.gps_session.stream(gps.WATCH_ENABLE | gps.WATCH_NEWSTYLE)
@@ -208,7 +188,6 @@ class BLEWardrive(plugins.Plugin):
             logging.warning(f"[BLEWardrive] gpsd connection failed: {e}")
 
     def _get_gps_fix(self, attempts=5):
-        """Get GPS coordinates with limited attempts"""
         if not self.gps_session:
             return None
             
@@ -227,14 +206,12 @@ class BLEWardrive(plugins.Plugin):
         return self.last_fix
 
     def _ble_loop(self):
-        """Main BLE scanning loop"""
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
         self.loop.create_task(self._scan_loop())
         self.loop.run_forever()
 
     async def _scan_loop(self):
-        """Async BLE scanning loop"""
         interval = self.options["scan_interval"]
         duration = self.options["scan_duration"]
         mesh_uuids = {"00001827-0000-1000-8000-00805f9b34fb", "00001828-0000-1000-8000-00805f9b34fb"}
@@ -264,10 +241,8 @@ class BLEWardrive(plugins.Plugin):
             await asyncio.sleep(interval)
 
     def _classify_device(self, device, adv):
-        """Enhanced device classification using company database"""
         mfg = adv.manufacturer_data or {}
         
-        # Check manufacturer data for better classification
         for company_id, data in mfg.items():
             company_name = self.bluetooth_company_db.get(company_id, "").lower()
             
@@ -284,7 +259,6 @@ class BLEWardrive(plugins.Plugin):
             elif any(x in company_name for x in ["nordic", "espressif", "texas instruments"]):
                 return "Development Board/Chip"
         
-        # Fallback to name-based classification
         if device.name:
             ln = device.name.lower()
             if "fitbit" in ln:
@@ -299,23 +273,18 @@ class BLEWardrive(plugins.Plugin):
         return "Unknown Device"
 
     def _detect_vulnerabilities(self, device, adv):
-        """Detect potential security vulnerabilities"""
         vulns = []
         
-        # Check for exposed services
         if adv.service_uuids and "00001800-0000-1000-8000-00805f9b34fb" in adv.service_uuids:
             vulns.append("Exposed Generic Access Service")
             
-        # Check MAC address privacy
         first_octet = int(device.address.split(":")[0], 16)
-        if not (first_octet & 0xC0 == 0xC0):  # Not random/private
+        if not (first_octet & 0xC0 == 0xC0):
             vulns.append("Static MAC Address (trackable)")
             
-        # Check for weak device names
         if device.name and any(x in device.name.lower() for x in ("default", "test", "demo", "admin")):
             vulns.append("Weak Device Name")
             
-        # Check for excessive advertising interval (battery drain attack potential)
         interval = getattr(adv, "interval", None)
         if interval is not None and interval < 20:
             vulns.append("Very short advertising interval")
@@ -323,27 +292,22 @@ class BLEWardrive(plugins.Plugin):
         return vulns or ["None"]
 
     def _detect_anomalies(self, device, adv):
-        """Detect unusual behavior patterns"""
         alerts = []
         
-        # Check advertising interval
         interval = getattr(adv, "interval", None)
         if interval is not None and interval < 20:
             alerts.append("Unusually short advertising interval")
             
-        # Check manufacturer data size
         for company_id, data in (adv.manufacturer_data or {}).items():
             if len(data) > 32:
                 alerts.append(f"Large manufacturer data from {self.bluetooth_company_db.get(company_id, 'Unknown')}")
                 
-        # Check for multiple manufacturer data entries (unusual)
         if len(adv.manufacturer_data or {}) > 2:
             alerts.append("Multiple manufacturer data entries")
             
         return alerts or ["None"]
 
     def _detect_rogue_device(self, vendor):
-        """Enhanced rogue device detection"""
         rogue_keywords = [
             "Espressif", "Tuya", "Shenzhen", "Ubiquiti", "ALFA", "Raspberry",
             "Generic", "Unknown", "Xiaomi", "Yeelink", "TP-LINK", "Test", 
@@ -354,10 +318,11 @@ class BLEWardrive(plugins.Plugin):
 
     def _report(self, device, adv, rssi, classification, vendor,
                 vulnerabilities, anomalies, rogue, is_mesh):
-        """Send enhanced device report to Discord"""
-        url = self.options["discord_webhook_url"]
-        if not url:
-            logging.warning("[BLEWardrive] No Discord webhook URL configured")
+        server = self.options["ntfy_server"]
+        topic = self.options["ntfy_topic"]
+        
+        if not server or not topic:
+            logging.warning("[BLEWardrive] ntfy server or topic not configured")
             return
 
         ts = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
@@ -380,45 +345,62 @@ class BLEWardrive(plugins.Plugin):
             except Exception:
                 pass
 
-        # Format manufacturer data with company names
         manufacturer_display = self._format_manufacturer_data(adv.manufacturer_data)
-
-        embed = {
-            "title": ":satellite: BLE Device Detected",
-            "fields": [
-                {"name":"Address",          "value":device.address,                         "inline":True},
-                {"name":"Vendor",           "value":vendor,                                  "inline":True},
-                {"name":"Name",             "value":device.name or "<Unknown>",              "inline":True},
-                {"name":"RSSI",             "value":f"{rssi} dBm",                           "inline":True},
-                {"name":"Type",             "value":classification,                          "inline":True},
-                {"name":"Mesh Network",     "value":str(is_mesh),                            "inline":True},
-                {"name":"Vulnerabilities",  "value":", ".join(vulnerabilities),              "inline":False},
-                {"name":"Anomalies",        "value":", ".join(anomalies),                    "inline":False},
-                {"name":"Rogue",            "value":rogue,                                   "inline":True},
-                {"name":"Time",             "value":ts,                                      "inline":True},
-                {"name":"Latitude",         "value":str(lat),                                "inline":True},
-                {"name":"Longitude",        "value":str(lon),                                "inline":True},
-                {"name":"Altitude",         "value":str(alt),                                "inline":True},
-                {"name":"Location Source",  "value":src,                                      "inline":True},
-                {"name":"Manufacturer Data", "value":manufacturer_display,                   "inline":False},
-            ],
-            "color": 0x00ff00 if rogue == "NO" else 0xff6600,  # Green for clean, orange for rogue
-            "footer": {"text":f"ble_wardrive v{self.__version__} | OUIs: {len(self.oui_db)} | BT Companies: {len(self.bluetooth_company_db)}"}
+        
+        message_lines = [
+            f"**Address:** {device.address}",
+            f"**Vendor:** {vendor}",
+            f"**Name:** {device.name or '<Unknown>'}",
+            f"**RSSI:** {rssi} dBm",
+            f"**Type:** {classification}",
+            f"**Mesh Network:** {is_mesh}",
+            f"**Rogue:** {rogue}",
+            "",
+            f"**Vulnerabilities:** {', '.join(vulnerabilities)}",
+            f"**Anomalies:** {', '.join(anomalies)}",
+            "",
+            f"**Time:** {ts}",
+            f"**Location:** {lat}, {lon}",
+            f"**Altitude:** {alt}",
+            f"**Location Source:** {src}",
+            "",
+            f"**Manufacturer Data:** {manufacturer_display}",
+            "",
+            f"*ble_wardrive v{self.__version__} | OUIs: {len(self.oui_db)} | BT Companies: {len(self.bluetooth_company_db)}*"
+        ]
+        
+        message = "\n".join(message_lines)
+        
+        priority = "4" if rogue == "YES" else "3"
+        tags = "warning,skull" if rogue == "YES" else "satellite,lock"
+        
+        headers = {
+            "Title": f"BLE Device: {device.name or device.address}",
+            "Priority": priority,
+            "Tags": tags,
+            "Markdown": "yes"
         }
-
-        payload = {"embeds":[embed]}
-
+        
         try:
-            resp = requests.post(url, json=payload, timeout=10)
-            if resp.status_code not in (200,204):
-                logging.error(f"[BLEWardrive] Discord webhook error {resp.status_code}: {resp.text}")
-            else:
-                logging.info(f"[BLEWardrive] Reported device: {device.address} ({classification})")
+            response = requests.post(
+                f"{server}/{topic}",
+                data=message.encode('utf-8'),
+                headers=headers,
+                timeout=10
+            )
+            response.raise_for_status()
+            logging.info(f"[BLEWardrive] Reported device: {device.address} ({classification})")
+            
+        except requests.exceptions.ConnectionError as e:
+            logging.error(f"[BLEWardrive] Connection error - ntfy server unreachable or bluetooth tether unavailable: {e}")
+        except requests.exceptions.Timeout as e:
+            logging.error(f"[BLEWardrive] Request timeout - network issues or bluetooth tether problem: {e}")
+        except requests.exceptions.RequestException as e:
+            logging.error(f"[BLEWardrive] Failed to send notification: {e}")
         except Exception as e:
-            logging.error(f"[BLEWardrive] Webhook exception: {e}")
+            logging.error(f"[BLEWardrive] Unexpected error sending notification: {e}")
 
     def on_unload(self, ui):
-        """Plugin cleanup"""
         self.stop_event.set()
         if self.loop:
             self.loop.call_soon_threadsafe(self.loop.stop)

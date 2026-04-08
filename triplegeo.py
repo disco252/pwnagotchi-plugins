@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TripleGeo v2.0.0 - GPS-enhanced WiFi handshake tracker for Pwnagotchi
+TripleGeo v2.1.0 - GPS-enhanced WiFi handshake tracker for Pwnagotchi
 
 Author: disco252
 License: GPL3
@@ -14,6 +14,7 @@ import os
 import re
 import threading
 import time
+import urllib.parse
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
@@ -32,6 +33,12 @@ except ImportError:
             pass
     plugins = _FakePlugins()
 
+try:
+    import requests  # type: ignore
+    HAS_REQUESTS = True
+except ImportError:
+    HAS_REQUESTS = False
+
 # ============================================================================
 # Type Aliases and Constants
 # ============================================================================
@@ -42,7 +49,7 @@ Coordinates3D = Tuple[float, float, float]  # (latitude, longitude, altitude)
 
 # GPSD report types from the gps module
 class GpsdReport:
-    class_ : str
+    class_: str
     mode: int
     lat: Optional[float]
     lon: Optional[float]
@@ -197,25 +204,15 @@ class ConfigValidator:
     
     @staticmethod
     def _parse_url(url: str) -> Dict[str, str]:
-        """Simple URL parser (since urllib.parse is not imported)."""
+        """Simple URL parser."""
         result = {'scheme': '', 'netloc': ''}
-        
-        # Extract scheme
-        if '://' in url:
-            scheme_part, rest = url.split('://', 1)
-            result['scheme'] = scheme_part.lower()
-            
-            # Extract netloc (host)
-            if '/' in rest:
-                netloc_part = rest.split('/', 1)[0]
-            else:
-                netloc_part = rest
-            
-            # Remove port for simplicity
-            if ':' in netloc_part and not netloc_part.startswith('['):
-                netloc_part = netloc_part.split(':')[0]
-            
-            result['netloc'] = netloc_part
+
+        try:
+            parsed = urllib.parse.urlparse(url)
+            result['scheme'] = parsed.scheme.lower()
+            result['netloc'] = parsed.netloc
+        except Exception:
+            pass
         
         return result
 
@@ -227,6 +224,7 @@ class ConfigManager:
         '/etc/pwnagotchi/config.toml',
         '/opt/pwnagotchi/config.toml',
         '/home/pi/pwnagotchi/config.toml',
+        '/root/pwnagotchi/config.toml',
         'config.toml'
     ]
     
@@ -447,7 +445,7 @@ class GpsdGPSProvider:
             try:
                 report = self.session.next()
                 
-                # Validate TPV report with mode >= 2 (2D fix or better)
+                # Validate TPV report with mode >= 2
                 if (getattr(report, 'class', '') == 'TPV' 
                     and getattr(report, 'mode', 1) >= 2 
                     and hasattr(report, 'lat') and hasattr(report, 'lon')):
@@ -456,6 +454,10 @@ class GpsdGPSProvider:
                     lon = float(report.lon)
                     alt = getattr(report, 'alt', None)
                     accuracy = getattr(report, 'eph', None)
+
+                    if lat != lat or lon != lon or abs(lat) == float('inf') or abs(lon) == float('inf'):
+                        logging.debug("[TripleGeo] Invalid GPS coordinates detected, skipping")
+                        continue
                     
                     # Check accuracy threshold
                     if accuracy is not None and accuracy > accuracy_threshold:
@@ -513,14 +515,21 @@ class CachedGPSProvider:
             if age_hours < self.expiry_hours:
                 coordinates = tuple(cache_data.get('coordinates', []))
                 accuracy = cache_data.get('accuracy')
-                
-                self._coordinates = coordinates[:2] if len(coordinates) >= 2 else None
-                self._timestamp = cache_time
-                self._accuracy = accuracy
-                
-                logging.info(f"[TripleGeo] Loaded cached GPS: {self._coordinates} "
-                           f"(age: {age_hours:.1f}h, accuracy: {accuracy}m)")
-                return True
+
+                valid_coordinates = True
+                for coord in coordinates[:2]:
+                    if not isinstance(coord, (int, float)) or coord != coord or abs(coord) == float('inf'):
+                        valid_coordinates = False
+                        break
+
+                if valid_coordinates and len(coordinates) >= 2:
+                    self._coordinates = (float(coordinates[0]), float(coordinates[1]))
+                    self._timestamp = cache_time
+                    self._accuracy = accuracy
+
+                    logging.info(f"[TripleGeo] Loaded cached GPS: {self._coordinates} "
+                               f"(age: {age_hours:.1f}h, accuracy: {accuracy}m)")
+                    return True
         
         except Exception as e:
             logging.warning(f"[TripleGeo] Error loading GPS cache: {e}")
@@ -538,8 +547,13 @@ class CachedGPSProvider:
             True if save successful, False otherwise
         """
         try:
+            for coord in coordinates[:2]:
+                if not isinstance(coord, (int, float)) or coord != coord or abs(coord) == float('inf'):
+                    logging.error("[TripleGeo] Invalid coordinates detected - refusing to save")
+                    return False
+
             cache_data = {
-                'coordinates': list(coordinates[:2]),  # Store lat/lon only
+                'coordinates': [float(coordinates[0]), float(coordinates[1])],
                 'timestamp': time.time(),
                 'accuracy': accuracy,
                 'source': 'cached'
@@ -585,7 +599,7 @@ class GPSCoordinator:
         
         # Track last known GPS
         self._gps_last: Optional[Tuple[float, float]] = None
-        self._ap_cache_gps: Dict[str, Tuple[float, float, float]] = {}  # mac -> (lat, lon, timestamp)
+        self._ap_cache_gps: Dict[str, Tuple[float, float, float, float]] = {}
     
     def set_ap_gps(
         self, 
@@ -602,10 +616,11 @@ class GPSCoordinator:
             lon: Longitude
             alt: Altitude (optional)
         """
+        timestamp = time.time()
         if alt is not None:
-            self._ap_cache_gps[ap_mac] = (lat, lon, alt)
+            self._ap_cache_gps[ap_mac] = (lat, lon, alt, timestamp)
         else:
-            self._ap_cache_gps[ap_mac] = (lat, lon, 0.0)
+            self._ap_cache_gps[ap_mac] = (lat, lon, 0.0, timestamp)
     
     def get_best_coordinates(
         self, 
@@ -632,7 +647,10 @@ class GPSCoordinator:
             Sources: 'current', 'cached', 'ap_cache', 'none'
         """
         # 1. Try fresh GPS from gpsd
-        current_gps = self.gpsd_provider.get_coordinates(accuracy_threshold=accuracy_threshold)
+        if self.gpsd_provider is not None:
+            current_gps = self.gpsd_provider.get_coordinates(accuracy_threshold=accuracy_threshold)
+        else:
+            current_gps = None
         if current_gps:
             logging.debug("[TripleGeo] Using current GPS coordinates")
             
@@ -682,14 +700,15 @@ class GPSCoordinator:
         now = time.time()
         best_gps = None
         best_timestamp = 0.0
-        
-        for ap_mac, gps_data in self._ap_cache_gps.items():
-            # Get timestamp from the cache key (we store it as third element)
-            lat, lon, _alt = gps_data
-            
-            # For simplicity, assume all AP GPS is within expiry if we have fresh data
-            best_gps = (lat, lon)
-            break  # Just take first valid one
+
+        for _ap_mac, gps_data in self._ap_cache_gps.items():
+            if len(gps_data) < 4:
+                continue
+            lat, lon, _altitude, timestamp = gps_data
+
+            if now - timestamp <= expiry_seconds and timestamp > best_timestamp:
+                best_timestamp = timestamp
+                best_gps = (lat, lon)
         
         return best_gps
     
@@ -711,6 +730,20 @@ class APCacheManager:
         self._cache: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.Lock()
         self._last_cleanup_time: float = time.time()
+
+    @property
+    def last_cleanup_time(self) -> float:
+        with self._lock:
+            return self._last_cleanup_time
+
+    @last_cleanup_time.setter
+    def last_cleanup_time(self, value: float) -> None:
+        with self._lock:
+            self._last_cleanup_time = value
+
+    @property
+    def lock(self) -> threading.Lock:
+        return self._lock
     
     def add_ap(
         self, 
@@ -887,10 +920,10 @@ class OUIDatabase:
                     line = line.strip()
                     if '(hex)' in line:
                         parts = line.split('(hex)')
-                        oui = parts[0].strip().replace('-', '').upper()[:6]
+                        oui = parts[0].strip().replace('-', '').replace(':', '').upper()[:6]
                         vendor = parts[-1].strip()
                         
-                        if len(oui) >= 6:
+                        if len(oui) >= 6 and self._validate_mac(oui + '000000'):
                             self._database[oui] = vendor
             
             logging.info(f"[TripleGeo] Loaded {len(self._database)} OUIs from database")
@@ -900,6 +933,13 @@ class OUIDatabase:
             logging.error(f"[TripleGeo] Error loading OUI database: {e}")
             return 0
     
+    @staticmethod
+    def _validate_mac(mac: str) -> bool:
+        if not mac:
+            return False
+        clean_mac = mac.replace(":", "").replace("-", "").replace(".", "")
+        return len(clean_mac) == 12 and all(c in '0123456789abcdefABCDEF' for c in clean_mac)
+
     def lookup(self, mac_addr: str) -> str:
         """Look up vendor for a MAC address.
         
@@ -909,10 +949,10 @@ class OUIDatabase:
         Returns:
             Vendor name or "Unknown" if not found
         """
-        if not mac_addr:
+        if not mac_addr or not self._validate_mac(mac_addr):
             return "Unknown"
         
-        oui = mac_addr.replace(":", "").replace("-", "").upper()[:6]
+        oui = mac_addr.replace(":", "").replace("-", "").replace(".", "").upper()[:6]
         return self._database.get(oui, "Unknown")
 
 
@@ -1238,6 +1278,8 @@ class DiscordWebhookSender:
     def __init__(self, webhook_url: str = "", log_prefix: str = "[TripleGeo]"):
         self.webhook_url = webhook_url
         self.log_prefix = log_prefix
+        self._lock = threading.Lock()
+        self._handshake_count: int = 0
     
     def send(
         self, 
@@ -1255,6 +1297,10 @@ class DiscordWebhookSender:
         """
         if not self.webhook_url:
             logging.warning(f"{self.log_prefix} No Discord webhook URL configured")
+            return False
+
+        if not HAS_REQUESTS:
+            logging.error(f"{self.log_prefix} requests library not available - cannot send Discord webhook")
             return False
         
         # Build embed
@@ -1377,11 +1423,15 @@ class DiscordWebhookSender:
         elif event.gps_source == 'cached' and event.gps_age_hours > 12:
             color = 0xffcc00  # Yellow for old cached GPS
         
+        handshake_num = 0
+        with self._lock:
+            handshake_num = self._handshake_count
+
         return {
             "title": safe_str(title, 256),
             "fields": fields[:25],  # Discord max 25 fields
             "color": color,
-            "footer": {"text": f"triplegeo v2.0.0 | Handshake #{getattr(self, '_handshake_count', 0)} | GPS: {event.gps_source}"}
+            "footer": {"text": f"triplegeo v2.1.0 | Handshake #{handshake_num} | GPS: {event.gps_source}"}
         }
 
 
@@ -1409,6 +1459,7 @@ class WigleUploader:
         # Tracking state
         self._last_upload_time: Optional[float] = None
         self._export_count: int = 0
+        self._lock = threading.Lock()
     
     def upload(
         self, 
@@ -1426,17 +1477,22 @@ class WigleUploader:
         Returns:
             UploadResult with networks_added on success, error_message on failure
         """
+        if not HAS_REQUESTS:
+            logging.error(f"{self.log_prefix} requests library not available - cannot upload to WiGLE")
+            return UploadResult.err("requests library not available")
+
         # Check credentials
         if not self.user or not self.token:
             logging.warning(f"{self.log_prefix} WiGLE credentials not configured - cannot upload")
             return UploadResult.err("WiGLE credentials not configured")
         
         # Check minimum interval since last upload
-        if self._last_upload_time:
-            time_since_last = time.time() - self._last_upload_time
-            if time_since_last < min_interval_seconds:
-                logging.debug(f"{self.log_prefix} Skipping WiGLE upload ({time_since_last:.0f}s since last)")
-                return UploadResult.err("Upload interval not yet reached")
+        with self._lock:
+            if self._last_upload_time:
+                time_since_last = time.time() - self._last_upload_time
+                if time_since_last < min_interval_seconds:
+                    logging.debug(f"{self.log_prefix} Skipping WiGLE upload ({time_since_last:.0f}s since last)")
+                    return UploadResult.err("Upload interval not yet reached")
         
         # Export data first
         export_result = self.export_manager.export(aps, format_type)
@@ -1477,16 +1533,17 @@ class WigleUploader:
                     
                     logging.info(f"{self.log_prefix} WiGLE upload successful - {networks_added} networks added")
                     
-                    # Update tracking state
-                    self._last_upload_time = time.time()
-                    self._export_count += 1
+                    with self._lock:
+                        self._last_upload_time = time.time()
+                        self._export_count += 1
                     
                     return UploadResult.ok(int(networks_added) if isinstance(networks_added, (int, float)) else 0)
                 
                 except json.JSONDecodeError:
                     logging.info(f"{self.log_prefix} WiGLE upload successful - networks added unknown")
-                    self._last_upload_time = time.time()
-                    self._export_count += 1
+                    with self._lock:
+                        self._last_upload_time = time.time()
+                        self._export_count += 1
                     return UploadResult.ok(0)
             
             else:
@@ -1503,10 +1560,11 @@ class WigleUploader:
         Returns:
             Dictionary with last_upload_time and export_count
         """
-        return {
-            'last_upload': self._last_upload_time,
-            'export_count': self._export_count
-        }
+        with self._lock:
+            return {
+                'last_upload': self._last_upload_time,
+                'export_count': self._export_count
+            }
 
 
 
@@ -1529,7 +1587,7 @@ class TripleGeo(plugins.Plugin):
     """
     
     __author__ = "disco252"
-    __version__ = "2.0.0"  # Refactored version
+    __version__ = "2.1.0"
     __license__ = "GPL3"
     __description__ = (
         "Enhanced geolocation with persistent GPS coordinates, AP caching, "
@@ -1560,6 +1618,7 @@ class TripleGeo(plugins.Plugin):
         self.processed: Set[str] = set()
         self.pending: List[str] = []
         self._pending_last_save: List[str] = []
+        self._pending_lock = threading.Lock()
         
         # State tracking
         self.handshake_count: int = 0
@@ -1621,7 +1680,6 @@ class TripleGeo(plugins.Plugin):
         """Initialize all plugin components."""
         # GPS providers
         cache_file = self.options.get('gps_cache_file', '/root/.triplegeo_gps_cache')
-        expiry_hours = self.options.get('gps_accuracy_threshold', 100) / 60 + 24  # Derive from config
         
         self._gpsd_provider = GpsdGPSProvider()
         
@@ -1713,8 +1771,11 @@ class TripleGeo(plugins.Plugin):
         if not self.options.get('use_last_gps', True):
             return
         
-        if self._cached_gps_provider:
-            self._cached_gps_provider.load_cache()
+        if self._cached_gps_provider and self._cached_gps_provider.load_cache():
+            if self._gps_coordinator:
+                cached_coordinates = self._cached_gps_provider.get_coordinates()
+                if cached_coordinates:
+                    self._gps_coordinator._gps_last = cached_coordinates
     
     def _load_wigle_state(self) -> None:
         """Load WiGLE upload state from previous session."""
@@ -1791,15 +1852,15 @@ class TripleGeo(plugins.Plugin):
         # Get current GPS for this scan
         gps_coord = None
         if self._gps_coordinator:
-            gps_coord, _ = self._gps_coordinator.get_best_coordinates(return_source=False)
+            gps_coord = self._gps_coordinator.get_best_coordinates(return_source=False)
         
         now = time.time()
         
         # Periodic cache cleanup (every 5 minutes)
-        with self.ap_cache._lock:
-            if now - self.ap_cache._last_cleanup_time >= 300:
-                self.ap_cache.cleanup_expired()
-                self.ap_cache._last_cleanup_time = now
+        current_cleanup_time = self.ap_cache.last_cleanup_time
+        if now - current_cleanup_time >= 300:
+            self.ap_cache.cleanup_expired()
+            self.ap_cache.last_cleanup_time = now
         
         cached_count = 0
         aps_with_data = 0
@@ -1808,6 +1869,11 @@ class TripleGeo(plugins.Plugin):
         for ap in data['wifi']['aps']:
             ap_mac = ap.get('mac', '')
             if not ap_mac:
+                continue
+
+            clean_mac = ap_mac.replace(":", "").replace("-", "").replace(".", "")
+            if not (len(clean_mac) == 12 and all(c in '0123456789abcdefABCDEF' for c in clean_mac)):
+                logging.debug(f"{self._log_prefix} Skipping invalid MAC address: {ap_mac}")
                 continue
             
             # Extract AP data
@@ -1830,6 +1896,9 @@ class TripleGeo(plugins.Plugin):
                 gps_coord=gps_coord,
                 clients=ap.get('clients', [])
             )
+
+            if gps_coord and self._gps_coordinator:
+                self._gps_coordinator.set_ap_gps(ap_mac, gps_coord[0], gps_coord[1])
             
             cached_count += 1
             
@@ -2060,13 +2129,13 @@ class TripleGeo(plugins.Plugin):
         
         # Save to pending list (only if changed)
         try:
-            if filename not in self.pending:
-                self.pending.append(filename)
-                
-                # Only save to file if pending list changed
-                if self.pending != self._pending_last_save:
-                    self._save_storage()  # This saves both processed and pending
-                    self._pending_last_save = list(self.pending)
+            with self._pending_lock:
+                if filename not in self.pending and isinstance(filename, str) and len(filename) > 0:
+                    self.pending.append(filename)
+                    
+                    if self.pending != self._pending_last_save:
+                        self._save_storage()
+                        self._pending_last_save = list(self.pending)
         
         except Exception as e:
             logging.warning(f"{self._log_prefix} Error saving pending: {e}")
@@ -2247,5 +2316,3 @@ def get_plugin() -> TripleGeo:
         TripleGeo plugin instance for use by Pwnagotchi
     """
     return TripleGeo()
-
-

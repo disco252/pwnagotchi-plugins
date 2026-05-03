@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TripleGeo v2.1.0 - GPS-enhanced WiFi handshake tracker for Pwnagotchi
+TripleGeo v2.1.0 -
 
 Author: disco252
 License: GPL3
@@ -10,6 +10,7 @@ import gzip
 import glob
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -38,6 +39,12 @@ try:
     HAS_REQUESTS = True
 except ImportError:
     HAS_REQUESTS = False
+
+try:
+    from smbus2 import SMBus  # type: ignore
+    HAS_SMBUS2 = True
+except ImportError:
+    HAS_SMBUS2 = False
 
 # ============================================================================
 # Type Aliases and Constants
@@ -95,6 +102,27 @@ class HandshakeEvent:
     vendor: str
     from_cache: bool
     cache_size: int
+    gps_fix_mode: int = 0
+    gps_device: str = "N/A"
+    gps_driver: str = "N/A"
+    gps_baud: Union[int, str] = "N/A"
+    gps_time: str = "N/A"
+    satellites_visible: Union[int, str] = "N/A"
+    satellites_used: Union[int, str] = "N/A"
+    hdop: Union[float, str] = "N/A"
+    vdop: Union[float, str] = "N/A"
+    pdop: Union[float, str] = "N/A"
+    speed: Union[float, str] = "N/A"
+    track: Union[float, str] = "N/A"
+    climb: Union[float, str] = "N/A"
+    receiver_label: str = "N/A"
+    compass_chip: str = "N/A"
+    compass_address: str = "N/A"
+    compass_heading: Union[float, str] = "N/A"
+    compass_x: Union[int, str] = "N/A"
+    compass_y: Union[int, str] = "N/A"
+    compass_z: Union[int, str] = "N/A"
+    compass_status: Union[int, str] = "N/A"
 
 
 @dataclass(frozen=True)
@@ -330,6 +358,11 @@ class ConfigManager:
             "gps_cache_expiry_hours": 24,
             "gps_accuracy_threshold": 100,
             "fallback_to_cached_gps": True,
+            "receiver_label": "SAM-M10Q + 5883 compass",
+            "compass_enabled": True,
+            "compass_bus": 1,
+            "compass_address": 13,
+            "compass_declination_deg": 0.0,
         }
     
     def _parse_toml_directly(self) -> Dict[str, Any]:
@@ -365,7 +398,11 @@ class ConfigManager:
                                     elif value.startswith('[') and value.endswith(']'):
                                         inner = value[1:-1].replace('"', '').replace("'", "")
                                         value = [v.strip() for v in inner.split(',') if v.strip()]
-                                    elif value.isdigit():
+                                    elif re.match(r'^0x[0-9a-fA-F]+$', value):
+                                        value = int(value, 16)
+                                    elif re.match(r'^-?\d+\.\d+$', value):
+                                        value = float(value)
+                                    elif re.match(r'^-?\d+$', value):
                                         value = int(value)
                                     
                                     config[key] = value
@@ -395,6 +432,47 @@ class GPSCacheData:
     source: str
 
 
+@dataclass(frozen=True)
+class GPSStatusData:
+    """Current status reported by gpsd."""
+    fix_mode: int = 0
+    device: str = "N/A"
+    driver: str = "N/A"
+    baud: Union[int, str] = "N/A"
+    timestamp: str = "N/A"
+    satellites_visible: Union[int, str] = "N/A"
+    satellites_used: Union[int, str] = "N/A"
+    hdop: Union[float, str] = "N/A"
+    vdop: Union[float, str] = "N/A"
+    pdop: Union[float, str] = "N/A"
+    speed: Union[float, str] = "N/A"
+    track: Union[float, str] = "N/A"
+    climb: Union[float, str] = "N/A"
+    accuracy: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class ReceiverInfo:
+    """Static receiver metadata gathered from the platform."""
+    label: str = "N/A"
+    module_model: str = "N/A"
+    firmware: str = "N/A"
+    protocol_version: str = "N/A"
+    gnss_enabled: str = "N/A"
+
+
+@dataclass(frozen=True)
+class CompassReading:
+    """Single compass sample."""
+    chip: str
+    address: int
+    heading: Optional[float]
+    x: int
+    y: int
+    z: int
+    status: int
+
+
 class GpsdGPSProvider:
     """GPS provider using gpsd daemon."""
     
@@ -402,7 +480,55 @@ class GpsdGPSProvider:
         self.host = host
         self.port = port
         self.session: Optional[Any] = None
-        
+        self._lock = threading.Lock()
+        self._last_tpv: Optional[Any] = None
+        self._last_sky: Optional[Any] = None
+        self._last_device: Optional[Any] = None
+        self._last_accuracy: Optional[float] = None
+
+    @staticmethod
+    def _report_value(report: Any, key: str, default: Any = None) -> Any:
+        if report is None:
+            return default
+        if isinstance(report, dict):
+            return report.get(key, default)
+        if hasattr(report, key):
+            return getattr(report, key, default)
+        try:
+            return report[key]
+        except Exception:
+            return default
+
+    @classmethod
+    def _report_class(cls, report: Any) -> str:
+        report_class = cls._report_value(report, 'class_', '')
+        if report_class:
+            return str(report_class)
+        return str(cls._report_value(report, 'class', ''))
+
+    def _drain_reports(self, max_attempts: int = 5) -> None:
+        if not self.session or max_attempts <= 0:
+            return
+
+        for attempt in range(max_attempts):
+            try:
+                report = self.session.next()
+                report_class = self._report_class(report)
+
+                with self._lock:
+                    if report_class == 'TPV':
+                        self._last_tpv = report
+                    elif report_class == 'SKY':
+                        self._last_sky = report
+                    elif report_class == 'DEVICE':
+                        self._last_device = report
+
+            except StopIteration:
+                break
+            except Exception as e:
+                logging.debug(f"[TripleGeo] gpsd drain exception on attempt {attempt + 1}: {e}")
+                break
+    
     def connect(self) -> bool:
         """Connect to gpsd daemon.
         
@@ -423,6 +549,51 @@ class GpsdGPSProvider:
             self.session = None
             logging.warning(f"[TripleGeo] gpsd connection failed: {e}")
             return False
+
+    def get_status(self, max_attempts: int = 5) -> GPSStatusData:
+        """Get the most recent gpsd status snapshot."""
+        self._drain_reports(max_attempts=max_attempts)
+
+        with self._lock:
+            tpv = self._last_tpv
+            sky = self._last_sky
+            device = self._last_device
+
+        fix_mode = int(self._report_value(tpv, 'mode', 0) or 0)
+        speed = self._report_value(tpv, 'speed', "N/A")
+        track = self._report_value(tpv, 'track', "N/A")
+        climb = self._report_value(tpv, 'climb', "N/A")
+        timestamp = self._report_value(tpv, 'time', "N/A")
+        accuracy = self._report_value(tpv, 'eph', None)
+
+        satellites = self._report_value(sky, 'satellites', []) or []
+        satellites_visible: Union[int, str] = len(satellites) if satellites else "N/A"
+        satellites_used: Union[int, str] = "N/A"
+        if satellites:
+            used = 0
+            for satellite in satellites:
+                if self._report_value(satellite, 'used', False):
+                    used += 1
+            satellites_used = used
+
+        device_path = self._report_value(device, 'path', self._report_value(tpv, 'device', 'N/A'))
+
+        return GPSStatusData(
+            fix_mode=fix_mode,
+            device=str(device_path),
+            driver=str(self._report_value(device, 'driver', 'N/A')),
+            baud=self._report_value(device, 'bps', "N/A"),
+            timestamp=str(timestamp) if timestamp is not None else "N/A",
+            satellites_visible=satellites_visible,
+            satellites_used=satellites_used,
+            hdop=self._report_value(sky, 'hdop', "N/A"),
+            vdop=self._report_value(sky, 'vdop', "N/A"),
+            pdop=self._report_value(sky, 'pdop', "N/A"),
+            speed=speed if speed is not None else "N/A",
+            track=track if track is not None else "N/A",
+            climb=climb if climb is not None else "N/A",
+            accuracy=float(accuracy) if isinstance(accuracy, (int, float)) else None,
+        )
     
     def get_coordinates(
         self, 
@@ -440,41 +611,51 @@ class GpsdGPSProvider:
         """
         if not self.session:
             return None
-        
-        for attempt in range(max_attempts):
-            try:
-                report = self.session.next()
-                
-                # Validate TPV report with mode >= 2
-                if (getattr(report, 'class', '') == 'TPV' 
-                    and getattr(report, 'mode', 1) >= 2 
-                    and hasattr(report, 'lat') and hasattr(report, 'lon')):
-                    
-                    lat = float(report.lat)
-                    lon = float(report.lon)
-                    alt = getattr(report, 'alt', None)
-                    accuracy = getattr(report, 'eph', None)
 
-                    if lat != lat or lon != lon or abs(lat) == float('inf') or abs(lon) == float('inf'):
-                        logging.debug("[TripleGeo] Invalid GPS coordinates detected, skipping")
-                        continue
-                    
-                    # Check accuracy threshold
-                    if accuracy is not None and accuracy > accuracy_threshold:
-                        logging.debug(f"[TripleGeo] GPS accuracy too low ({accuracy}m > {accuracy_threshold}m)")
-                        continue
-                    
-                    # Build coordinate tuple with altitude if available
-                    if alt is not None:
-                        return (lat, lon, float(alt))
-                    return (lat, lon)
-                    
-            except StopIteration:
-                break  # No more GPS data available
-            except Exception as e:
-                logging.debug(f"[TripleGeo] GPS read exception on attempt {attempt + 1}: {e}")
-        
-        return None
+        self._drain_reports(max_attempts=max_attempts)
+
+        with self._lock:
+            report = self._last_tpv
+
+        if self._report_class(report) != 'TPV':
+            return None
+
+        mode = int(self._report_value(report, 'mode', 0) or 0)
+        if mode < 2:
+            return None
+
+        lat = self._report_value(report, 'lat')
+        lon = self._report_value(report, 'lon')
+        alt = self._report_value(report, 'alt')
+        accuracy = self._report_value(report, 'eph')
+
+        if lat is None or lon is None:
+            return None
+
+        lat = float(lat)
+        lon = float(lon)
+        if lat != lat or lon != lon or abs(lat) == float('inf') or abs(lon) == float('inf'):
+            logging.debug("[TripleGeo] Invalid GPS coordinates detected, skipping")
+            return None
+
+        if isinstance(accuracy, (int, float)):
+            self._last_accuracy = float(accuracy)
+            if accuracy > accuracy_threshold:
+                logging.debug(f"[TripleGeo] GPS accuracy too low ({accuracy}m > {accuracy_threshold}m)")
+                return None
+        else:
+            self._last_accuracy = None
+
+        if alt is not None:
+            try:
+                return (lat, lon, float(alt))
+            except (TypeError, ValueError):
+                pass
+
+        return (lat, lon)
+
+    def get_last_accuracy(self) -> Optional[float]:
+        return self._last_accuracy
     
     def close(self) -> None:
         """Close gpsd connection."""
@@ -483,6 +664,136 @@ class GpsdGPSProvider:
                 self.session.close()
             except Exception:
                 pass
+
+
+class CompassProvider:
+    """Read heading and raw axis data from a 5883-series compass."""
+
+    QMC_REG_SETRESET = 0x0B
+    QMC_REG_CONTROL = 0x09
+    HMC_REG_CONFIG_A = 0x00
+    HMC_REG_CONFIG_B = 0x01
+    HMC_REG_MODE = 0x02
+
+    def __init__(
+        self,
+        enabled: bool = True,
+        bus_number: int = 1,
+        preferred_address: Optional[int] = None,
+        declination_deg: float = 0.0,
+    ):
+        self.enabled = enabled
+        self.bus_number = bus_number
+        self.preferred_address = preferred_address
+        self.declination_deg = declination_deg
+        self._lock = threading.Lock()
+        self._chip: Optional[str] = None
+        self._address: Optional[int] = None
+
+    @staticmethod
+    def _signed16(value: int) -> int:
+        return value - 65536 if value >= 32768 else value
+
+    def _candidate_addresses(self) -> List[int]:
+        addresses: List[int] = []
+        if self.preferred_address is not None:
+            addresses.append(int(self.preferred_address))
+        for address in (0x0D, 0x1E):
+            if address not in addresses:
+                addresses.append(address)
+        return addresses
+
+    def _try_configure_qmc(self, bus: Any, address: int) -> bool:
+        bus.write_byte_data(address, self.QMC_REG_SETRESET, 0x01)
+        bus.write_byte_data(address, self.QMC_REG_CONTROL, 0x1D)
+        bus.read_byte_data(address, 0x00)
+        self._chip = "QMC5883L"
+        self._address = address
+        return True
+
+    def _try_configure_hmc(self, bus: Any, address: int) -> bool:
+        ident = [
+            bus.read_byte_data(address, 0x0A),
+            bus.read_byte_data(address, 0x0B),
+            bus.read_byte_data(address, 0x0C),
+        ]
+        if ident != [0x48, 0x34, 0x33]:
+            raise ValueError("Unexpected HMC5883L identity")
+
+        bus.write_byte_data(address, self.HMC_REG_CONFIG_A, 0x70)
+        bus.write_byte_data(address, self.HMC_REG_CONFIG_B, 0x20)
+        bus.write_byte_data(address, self.HMC_REG_MODE, 0x00)
+        self._chip = "HMC5883L"
+        self._address = address
+        return True
+
+    def _ensure_device(self) -> bool:
+        if not self.enabled or not HAS_SMBUS2:
+            return False
+
+        with SMBus(self.bus_number) as bus:
+            for address in self._candidate_addresses():
+                try:
+                    if address == 0x0D and self._try_configure_qmc(bus, address):
+                        return True
+                except Exception:
+                    pass
+
+                try:
+                    if address == 0x1E and self._try_configure_hmc(bus, address):
+                        return True
+                except Exception:
+                    pass
+
+        self._chip = None
+        self._address = None
+        return False
+
+    def read(self) -> Optional[CompassReading]:
+        if not self.enabled or not HAS_SMBUS2:
+            return None
+
+        with self._lock:
+            if self._chip is None or self._address is None:
+                if not self._ensure_device():
+                    return None
+
+            try:
+                with SMBus(self.bus_number) as bus:
+                    if self._chip == "QMC5883L":
+                        data = [bus.read_byte_data(self._address, reg) for reg in range(0x00, 0x07)]
+                        x = self._signed16(data[0] | (data[1] << 8))
+                        y = self._signed16(data[2] | (data[3] << 8))
+                        z = self._signed16(data[4] | (data[5] << 8))
+                        status = data[6]
+                    elif self._chip == "HMC5883L":
+                        data = [bus.read_byte_data(self._address, reg) for reg in range(0x03, 0x09)]
+                        x = self._signed16((data[0] << 8) | data[1])
+                        z = self._signed16((data[2] << 8) | data[3])
+                        y = self._signed16((data[4] << 8) | data[5])
+                        status = 0
+                    else:
+                        return None
+
+                heading = None
+                if x != 0 or y != 0:
+                    heading = (math.degrees(math.atan2(y, x)) + self.declination_deg + 360.0) % 360.0
+
+                return CompassReading(
+                    chip=self._chip,
+                    address=self._address,
+                    heading=round(heading, 1) if heading is not None else None,
+                    x=x,
+                    y=y,
+                    z=z,
+                    status=status,
+                )
+
+            except Exception as e:
+                logging.debug(f"[TripleGeo] Compass read failed: {e}")
+                self._chip = None
+                self._address = None
+                return None
 
 
 class CachedGPSProvider:
@@ -656,7 +967,10 @@ class GPSCoordinator:
             
             # Update last known and cache
             self._gps_last = (current_gps[0], current_gps[1])
-            self.cached_provider.save_cache(current_gps, getattr(current_gps, 'accuracy', None))
+            accuracy = None
+            if self.gpsd_provider is not None:
+                accuracy = self.gpsd_provider.get_last_accuracy()
+            self.cached_provider.save_cache(current_gps, accuracy)
             
             if return_source:
                 return current_gps[:2], "current"
@@ -1341,6 +1655,12 @@ class DiscordWebhookSender:
                           f"Signal: {event.rssi} dBm\n"
                           f"Channel: {event.channel}\n"
                           f"Encryption: {event.encryption}\n"
+                          f"Fix: {self._format_fix_mode(event.gps_fix_mode)} | "
+                          f"Sats: {event.satellites_used}/{event.satellites_visible}\n"
+                          f"Receiver: {event.receiver_label} | "
+                          f"{event.gps_device} @ {event.gps_baud}\n"
+                          f"Compass: {event.compass_heading} deg "
+                          f"({event.compass_chip} {event.compass_address})\n"
                           f"Location: {event.lat},{event.lon} ({event.gps_source})\n"
                           f"File: {os.path.basename(event.handshake_file)}"
             }
@@ -1373,6 +1693,13 @@ class DiscordWebhookSender:
                 return "N/A"
             sv = str(value)
             return sv[:maxlen] if len(sv) > maxlen else sv
+
+        def compact(value: Any, digits: int = 1) -> str:
+            if value is None or value == "N/A":
+                return "N/A"
+            if isinstance(value, float):
+                return f"{value:.{digits}f}"
+            return str(value)
         
         # Build fields list
         fields = [
@@ -1387,22 +1714,61 @@ class DiscordWebhookSender:
             {"name": "Encryption", "value": safe_str(event.encryption), "inline": True},
             {"name": "Vendor", "value": safe_str(event.vendor), "inline": True},
         ]
+
+        receiver_text = safe_str(event.receiver_label, 256)
+        if receiver_text != "N/A":
+            receiver_text += (
+                f"\n{safe_str(event.gps_device, 128)} | "
+                f"{safe_str(event.gps_driver, 128)} @ {safe_str(event.gps_baud, 32)}"
+            )
+            fields.append({"name": "Receiver", "value": receiver_text, "inline": False})
         
         # Add timestamp
         ts = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(event.timestamp))
         fields.append({"name": "Timestamp", "value": ts, "inline": True})
+        if event.gps_time != "N/A":
+            fields.append({"name": "GPS Time", "value": safe_str(event.gps_time), "inline": True})
         
         # Location field
         location_text = f"Lat: {event.lat}, Lon: {event.lon}"
         if event.altitude != 'N/A':
             location_text += f", Alt: {event.altitude}m"
-        if event.gps_source != 'unknown':
+        if event.gps_source not in ('unknown', 'none'):
             location_text += f" ({event.gps_source}"
             if event.gps_age_hours > 0:
                 location_text += f", {event.gps_age_hours:.1f}h old"
             location_text += ")"
         
         fields.append({"name": "Location", "value": location_text, "inline": True})
+
+        fix_text = (
+            f"{self._format_fix_mode(event.gps_fix_mode)}\n"
+            f"Used: {safe_str(event.satellites_used)} | Visible: {safe_str(event.satellites_visible)}"
+        )
+        fields.append({"name": "GPS Fix", "value": fix_text, "inline": True})
+
+        quality_bits = [
+            f"HDOP: {compact(event.hdop)}",
+            f"VDOP: {compact(event.vdop)}",
+            f"PDOP: {compact(event.pdop)}",
+        ]
+        fields.append({"name": "GPS Quality", "value": " | ".join(quality_bits), "inline": False})
+
+        motion_bits = [
+            f"Speed: {compact(event.speed)}",
+            f"Track: {compact(event.track)}",
+            f"Climb: {compact(event.climb)}",
+        ]
+        fields.append({"name": "Motion", "value": " | ".join(motion_bits), "inline": False})
+
+        if event.compass_chip != "N/A":
+            compass_text = (
+                f"{safe_str(event.compass_chip)} {safe_str(event.compass_address)}\n"
+                f"Heading: {compact(event.compass_heading)} deg\n"
+                f"X:{safe_str(event.compass_x)} Y:{safe_str(event.compass_y)} Z:{safe_str(event.compass_z)} "
+                f"Status:{safe_str(event.compass_status)}"
+            )
+            fields.append({"name": "Compass", "value": compass_text, "inline": False})
         
         # Add filename
         if event.handshake_file:
@@ -1431,8 +1797,17 @@ class DiscordWebhookSender:
             "title": safe_str(title, 256),
             "fields": fields[:25],  # Discord max 25 fields
             "color": color,
-            "footer": {"text": f"triplegeo v2.1.0 | Handshake #{handshake_num} | GPS: {event.gps_source}"}
+            "footer": {"text": f"triplegeo v2.2.0 | Handshake #{handshake_num} | GPS: {event.gps_source}"}
         }
+
+    @staticmethod
+    def _format_fix_mode(mode: int) -> str:
+        return {
+            0: "No Data",
+            1: "No Fix",
+            2: "2D Fix",
+            3: "3D Fix",
+        }.get(mode, str(mode))
 
 
 # ============================================================================
@@ -1587,11 +1962,11 @@ class TripleGeo(plugins.Plugin):
     """
     
     __author__ = "disco252"
-    __version__ = "2.1.0"
+    __version__ = "2.2.0"
     __license__ = "GPL3"
     __description__ = (
-        "Enhanced geolocation with persistent GPS coordinates, AP caching, "
-        "Discord reporting, and WiGLE upload support for Pwnagotchi."
+        "Enhanced geolocation with persistent GPS coordinates, compass "
+        "telemetry, Discord reporting, and WiGLE upload support for Pwnagotchi."
     )
     __name__ = "triplegeo"
     
@@ -1609,6 +1984,8 @@ class TripleGeo(plugins.Plugin):
         self._gpsd_provider: Optional[GpsdGPSProvider] = None
         self._cached_gps_provider: Optional[CachedGPSProvider] = None
         self._gps_coordinator: Optional[GPSCoordinator] = None
+        self._compass_provider: Optional[CompassProvider] = None
+        self._receiver_info = ReceiverInfo()
         
         # Data stores
         self.ap_cache: APCacheManager = APCacheManager()
@@ -1657,6 +2034,11 @@ class TripleGeo(plugins.Plugin):
         logging.info(f"{self._log_prefix} Use last known GPS: {self.options.get('use_last_gps', True)}")
         logging.info(f"{self._log_prefix} GPS cache expiry: {self.options.get('gps_cache_expiry_hours', 24)}h")
         logging.info(f"{self._log_prefix} GPS accuracy threshold: {self.options.get('gps_accuracy_threshold', 100)}m")
+        logging.info(
+            f"{self._log_prefix} Compass: "
+            f"{'ENABLED' if self.options.get('compass_enabled', True) else 'DISABLED'} "
+            f"(bus={self.options.get('compass_bus', 1)}, addr={self.options.get('compass_address', 13)})"
+        )
         
         # Log WiGLE configuration if enabled
         wigle_enabled = self.options.get('wigle_upload', False)
@@ -1682,6 +2064,9 @@ class TripleGeo(plugins.Plugin):
         cache_file = self.options.get('gps_cache_file', '/root/.triplegeo_gps_cache')
         
         self._gpsd_provider = GpsdGPSProvider()
+        self._receiver_info = ReceiverInfo(
+            label=str(self.options.get('receiver_label', 'N/A')),
+        )
         
         cached_provider = CachedGPSProvider(
             cache_file=cache_file,
@@ -1699,6 +2084,14 @@ class TripleGeo(plugins.Plugin):
         
         # Connect to gpsd
         self._connect_gpsd()
+
+        # Optional compass provider
+        self._compass_provider = CompassProvider(
+            enabled=bool(self.options.get('compass_enabled', True)),
+            bus_number=int(self.options.get('compass_bus', 1)),
+            preferred_address=int(self.options.get('compass_address', 13)),
+            declination_deg=float(self.options.get('compass_declination_deg', 0.0)),
+        )
         
         # AP cache manager
         self.ap_cache = APCacheManager(
@@ -1944,6 +2337,14 @@ class TripleGeo(plugins.Plugin):
         gps_coord, gps_source = (None, "none")
         if self._gps_coordinator:
             gps_coord, gps_source = self._gps_coordinator.get_best_coordinates(return_source=True)
+
+        gps_status = GPSStatusData()
+        if self._gpsd_provider:
+            gps_status = self._gpsd_provider.get_status(max_attempts=3)
+
+        compass_reading = None
+        if self._compass_provider:
+            compass_reading = self._compass_provider.read()
         
         gps_age_hours = 0.0
         if gps_coord and self._cached_gps_provider:
@@ -2093,7 +2494,28 @@ class TripleGeo(plugins.Plugin):
             handshake_file=filename,
             vendor=vendor,
             from_cache=from_cache,
-            cache_size=self.ap_cache.get_count()
+            cache_size=self.ap_cache.get_count(),
+            gps_fix_mode=gps_status.fix_mode,
+            gps_device=gps_status.device,
+            gps_driver=gps_status.driver,
+            gps_baud=gps_status.baud,
+            gps_time=gps_status.timestamp,
+            satellites_visible=gps_status.satellites_visible,
+            satellites_used=gps_status.satellites_used,
+            hdop=gps_status.hdop,
+            vdop=gps_status.vdop,
+            pdop=gps_status.pdop,
+            speed=gps_status.speed,
+            track=gps_status.track,
+            climb=gps_status.climb,
+            receiver_label=self._receiver_info.label,
+            compass_chip=compass_reading.chip if compass_reading else "N/A",
+            compass_address=(f"0x{compass_reading.address:02X}" if compass_reading else "N/A"),
+            compass_heading=(compass_reading.heading if compass_reading and compass_reading.heading is not None else "N/A"),
+            compass_x=compass_reading.x if compass_reading else "N/A",
+            compass_y=compass_reading.y if compass_reading else "N/A",
+            compass_z=compass_reading.z if compass_reading else "N/A",
+            compass_status=(f"0x{compass_reading.status:02X}" if compass_reading else "N/A"),
         )
         
         # Log comprehensive technical details
@@ -2105,6 +2527,16 @@ class TripleGeo(plugins.Plugin):
         logging.info(f"{self._log_prefix}   Encryption: {encryption}")
         logging.info(f"{self._log_prefix}   Vendor: {vendor}")
         logging.info(f"{self._log_prefix}   GPS Source: {gps_source}")
+        logging.info(
+            f"{self._log_prefix}   GPS Status: mode={gps_status.fix_mode}, "
+            f"used={gps_status.satellites_used}, visible={gps_status.satellites_visible}, "
+            f"hdop={gps_status.hdop}, device={gps_status.device}"
+        )
+        if compass_reading:
+            logging.info(
+                f"{self._log_prefix}   Compass: {compass_reading.chip}@0x{compass_reading.address:02X}, "
+                f"heading={compass_reading.heading}, xyz=({compass_reading.x}, {compass_reading.y}, {compass_reading.z})"
+            )
         logging.info(f"{self._log_prefix}   Data source: {'Cache' if from_cache else 'Direct'}")
         
         # Save GPS coordinates to file if available

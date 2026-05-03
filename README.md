@@ -13,7 +13,7 @@
 ## Requirements
 
 - Pwnagotchi plugin environment
-- `gpsd` and Python `gps` module if you want live GPS
+- `gpsd` and Python `gps` module. Best used with M10Q-5883.
 - Python `requests` module for Discord and WiGLE uploads
 - An OUI database file if you want vendor lookups
 
